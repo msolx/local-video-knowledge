@@ -1,0 +1,23 @@
+{
+  "paths": {
+    "data_root": "./data",
+    "ffmpeg": "ffmpeg"
+  },
+  "pipeline": {
+    "accepted_extensions": [".mp4", ".mkv", ".mov", ".webm", ".avi"],
+    "minimum_file_age_seconds": 30,
+    "copy_source_into_archive": true
+  },
+  "intake": {"modified_time_window_seconds": 900, "ambiguity_margin": 0.04},
+  "asr": {
+    "backend": "faster_whisper",
+    "cuda_runtime_dir": null,
+    "faster_whisper": {"model": "tiny", "device": "cpu", "compute_type": "int8", "language": "zh", "vad_filter": false},
+    "command": {"command_template": []}
+  },
+  "llm": {
+    "backend": "ollama",
+    "ollama": {"base_url": "http://127.0.0.1:30000", "model": "qwen3:0.6b", "temperature": 0.2, "num_ctx": 16384},
+    "prompt_version": "knowledge-json-v1"
+  }
+}

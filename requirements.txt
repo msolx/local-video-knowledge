@@ -1,0 +1,10 @@
+# Main pipeline environment. Model weights and CUDA runtimes are intentionally
+# not distributed by this repository.
+ctranslate2==4.4.0
+faster-whisper>=1.1.0,<2
+numpy<2.4
+opencv-python>=4.10,<5
+# CPU OCR fallback for the visual-evidence stage. GPU OCR stays isolated in
+# requirements-paddle-gpu.txt.
+paddleocr==3.7.0
+paddlepaddle>=3.3,<3.4

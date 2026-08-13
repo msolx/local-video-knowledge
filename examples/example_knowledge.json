@@ -1,0 +1,21 @@
+{
+  "one_sentence_conclusion": {
+    "summary_type": "llm_synthesis",
+    "content": "该合成示例强调在执行前保存配置。",
+    "evidence_segment_ids": ["seg_000002"]
+  },
+  "knowledge_points": [
+    {
+      "id": "k_001",
+      "type": "author_opinion",
+      "verification_status": "not_checked",
+      "title": "执行前保存配置",
+      "content": "作者建议在执行前保存配置文件。",
+      "evidence_segment_ids": ["seg_000002"],
+      "evidence": [{"segment_id": "seg_000002", "start": 3.2, "end": 7.0, "text": "作者建议在执行前保存配置文件。"}],
+      "visual_evidence_ids": [],
+      "unified_evidence": [{"source_type": "audio_asr", "segment_ids": ["seg_000002"], "start": 3.2, "end": 7.0}]
+    }
+  ],
+  "keywords": ["synthetic", "configuration"]
+}

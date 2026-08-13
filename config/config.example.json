@@ -1,0 +1,82 @@
+{
+  "paths": {
+    "data_root": "./data",
+    "ffmpeg": "ffmpeg"
+  },
+  "pipeline": {
+    "accepted_extensions": [".mp4", ".mkv", ".mov", ".webm", ".avi"],
+    "minimum_file_age_seconds": 30,
+    "copy_source_into_archive": true
+  },
+  "intake": {
+    "modified_time_window_seconds": 900,
+    "ambiguity_margin": 0.04
+  },
+  "asr": {
+    "backend": "faster_whisper",
+    "cuda_runtime_dir": null,
+    "faster_whisper": {
+      "model": "large-v3",
+      "device": "cuda",
+      "compute_type": "float16",
+      "language": "zh",
+      "vad_filter": false
+    },
+    "command": { "command_template": [] }
+  },
+  "llm": {
+    "backend": "openai_compatible",
+    "base_url": "http://127.0.0.1:1234/v1",
+    "model": "YOUR_KNOWLEDGE_MODEL_IDENTIFIER",
+    "api_key_env": null,
+    "temperature": 0.1,
+    "max_tokens": 8192,
+    "prompt_version": "knowledge-extraction-v2.3-selective-visual",
+    "schema_version": "knowledge-v2.3"
+  },
+  "knowledge": {
+    "chunking": { "enabled": true, "max_input_tokens": 10000, "overlap_tokens": 800, "token_estimator": "heuristic_cjk_v1" },
+    "lifecycle": {
+      "unload_policy": "after_task",
+      "lm_studio_cli": "lms",
+      "model_key": "YOUR_LM_STUDIO_MODEL_KEY",
+      "gpu": "max",
+      "context_length": 32768,
+      "ttl_seconds": 3600,
+      "verify_nvidia_smi": true,
+      "nvidia_smi": "nvidia-smi"
+    }
+  },
+  "visual_evidence": {
+    "enabled": true,
+    "pre_roll_seconds": 3,
+    "post_roll_seconds": 4,
+    "request_merge_gap_seconds": 12,
+    "max_request_duration_seconds": 24,
+    "max_requests_per_video": 5,
+    "sample_interval_seconds": 2,
+    "max_frames_per_request": 3,
+    "dhash_distance_threshold": 7,
+    "scene_histogram_threshold": 0.18,
+    "ocr": {
+      "backend": "paddleocr_gpu_worker",
+      "python_executable": ".venv-paddle-gpu/Scripts/python.exe",
+      "timeout_seconds": 600,
+      "device": "gpu:0",
+      "detector_model": "PP-OCRv6_medium_det",
+      "recognizer_model": "PP-OCRv6_medium_rec",
+      "minimum_confidence": 0.65,
+      "warmup": true,
+      "fallback": { "backend": "paddleocr_cpu", "device": "cpu", "detector_model": "PP-OCRv6_medium_det", "recognizer_model": "PP-OCRv6_medium_rec", "minimum_confidence": 0.65, "warmup": true }
+    },
+    "vlm": {
+      "backend": "openai_compatible",
+      "model": "YOUR_VLM_MODEL_IDENTIFIER",
+      "api_key_env": null,
+      "base_url": "http://127.0.0.1:1234/v1",
+      "max_tokens": 500,
+      "timeout_seconds": 600,
+      "nvidia_smi": "nvidia-smi"
+    }
+  }
+}

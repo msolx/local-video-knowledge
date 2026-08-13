@@ -1,0 +1,8 @@
+{
+  "video_id": "example_video_001",
+  "language": "zh",
+  "segments": [
+    {"id": "seg_000001", "start": 0.0, "end": 3.2, "text": "这是一个完全人工构造的示例。"},
+    {"id": "seg_000002", "start": 3.2, "end": 7.0, "text": "作者建议在执行前保存配置文件。"}
+  ]
+}

@@ -1,0 +1,4 @@
+# Install a Paddle GPU wheel suitable for your OS/CUDA first; see README.
+# This file contains the OCR layer that runs in the separate .venv-paddle-gpu.
+paddleocr==3.7.0
+paddlex==3.7.2

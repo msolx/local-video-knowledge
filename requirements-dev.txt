@@ -1,0 +1,2 @@
+# Test-only tooling; install after requirements.txt when contributing.
+pytest>=8,<9

@@ -1,0 +1,2 @@
+# Keep F2 in a separate environment: its pinned dependencies can differ from AI/OCR runtimes.
+f2==0.0.1.7

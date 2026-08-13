@@ -1,0 +1,46 @@
+# Python environments and build artefacts
+.venv/
+.venv-f2/
+.venv-paddle-gpu/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local runtimes and model caches (the runtime setup note is public)
+runtime/*
+!runtime/README.md
+models/
+model_cache/
+.cache/
+
+# Machine-specific configuration and secrets
+config/config.json
+.env
+*.env
+
+# User data and generated output
+data/*
+logs/
+
+# Media and generated visual evidence
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
+*.wav
+*.mp3
+*.m4a
+*.jpg
+*.jpeg
+*.png
+!docs/assets/*.jpg
+!docs/assets/*.jpeg
+!docs/assets/*.png
+
+# Logs and local IDE/Windows files
+*.log
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
