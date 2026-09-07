@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local-video-knowledge.org/dy/sync_run_v1.schema.json",
+  "title": "SyncRunV1",
+  "description": "Execution summary, pagination telemetry, and cursor watermark state for a collection sync run.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "sync_run_id",
+    "platform",
+    "collector_type",
+    "mode",
+    "status",
+    "started_at",
+    "execution_context",
+    "watermark",
+    "termination",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "sync-run-v1",
+      "description": "Schema version identifier."
+    },
+    "sync_run_id": {
+      "type": "string",
+      "description": "Unique session identifier for this sync execution (e.g. sync_douyin_coll_20260904_153708)."
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["douyin", "bilibili", "youtube", "other"],
+      "description": "Target platform."
+    },
+    "collector_type": {
+      "type": "string",
+      "const": "collection",
+      "description": "Strictly collection synchronization."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["incremental", "backfill", "probe"],
+      "description": "Sync execution mode: incremental (watermark-bounded), backfill (historical deep scan), or probe (connectivity test)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "completed", "failed", "aborted"],
+      "description": "Final or current execution lifecycle status."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the sync run started."
+    },
+    "finished_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the sync run concluded, null if in-flight."
+    },
+    "execution_context": {
+      "type": "object",
+      "required": ["page_size"],
+      "properties": {
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Fixed count parameter used throughout all pagination requests in this run."
+        },
+        "agent_id": {
+          "type": ["string", "null"],
+          "description": "Identifier of the agent or worker process that performed the sync."
+        },
+        "environment": {
+          "type": ["string", "null"],
+          "description": "Runtime environment notes (e.g. puppeteer-core-22 / chromium-124)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "watermark": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "previous_watermark_cursor": {
+          "type": ["string", "null"],
+          "description": "Watermark cursor inherited from the prior successful run ($W_{prev}$). Null for full backfill."
+        },
+        "new_watermark_cursor": {
+          "type": ["string", "null"],
+          "description": "Cursor returned from Page 1 (latest window) to be persisted upon completion as $W_{new}$."
+        }
+      },
+      "additionalProperties": false
+    },
+    "termination": {
+      "type": "object",
+      "required": ["stop_reason"],
+      "properties": {
+        "stop_reason": {
+          "type": "string",
+          "enum": [
+            "watermark_reached",
+            "terminal_has_more_zero",
+            "max_pages_reached",
+            "error",
+            "manual_abort"
+          ],
+          "description": "Definitive trigger that concluded pagination."
+        },
+        "stop_cursor": {
+          "type": ["string", "null"],
+          "description": "The cursor value where pagination halted."
+        },
+        "has_more": {
+          "type": ["integer", "null"],
+          "description": "The has_more flag returned in the final fetched page."
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "pages_fetched",
+        "items_seen",
+        "new_items",
+        "reappeared_items",
+        "known_items",
+        "errors_count"
+      ],
+      "properties": {
+        "pages_fetched": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of HTTP pages successfully fetched."
+        },
+        "items_seen": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total items encountered across all fetched pages."
+        },
+        "new_items": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of previously unseen items ingested."
+        },
+        "reappeared_items": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of known items observed reappearing at the head (re-favorites)."
+        },
+        "known_items": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of known items observed in their expected positions."
+        },
+        "errors_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of non-fatal page or item processing errors."
+        }
+      },
+      "additionalProperties": false
+    },
+    "error": {
+      "type": ["object", "null"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "details": {}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

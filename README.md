@@ -20,6 +20,7 @@ point can be traced back to the original media.
 - Selective visual-reference detection, PP-OCRv6 OCR, and on-demand VLM fallback
 - Program-owned timestamps/provenance; LLMs select evidence but do not invent it
 - Explicit GPU model lifecycle management for ASR, OCR, VLM, and Knowledge models
+- Completed-media publishing through NTFS hardlinks, with atomic-copy fallback
 
 Not implemented: automatic favorites ingestion, NAS workflow, RAG/embedding,
 fact verification, source trust scoring, and a web UI.
@@ -45,6 +46,8 @@ flowchart TD
     J --> N[knowledge.json]
     M --> N
     N --> O[knowledge.md]
+    N --> P[Completed media publish]
+    P --> Q[completed_media/video_id/source.mp4]
 ```
 
 ## Core design
@@ -166,6 +169,34 @@ Use `--force` only when deliberately re-running completed stages. The pipeline
 records state and fingerprints to avoid repeating completed media, ASR, or
 Knowledge work unnecessarily.
 
+## Visual usage and completed media
+
+`knowledge.json` records a program-derived `knowledge.visual_usage` summary.
+It distinguishes OCR/VLM work that actually executed from visual evidence that
+the final Knowledge points retained. `knowledge.md` renders the same summary
+and labels each cited visual evidence entry as `[OCR]` or `[VLM]`.
+
+After both `knowledge.json` and `knowledge.md` are safely written, the
+independent `publish_media` stage exposes the verified complete A/V file at:
+
+```text
+Knowledge
+   │
+   ├── video_id
+   ├── evidence timestamps
+   └── completed media path
+              ↓
+data/completed_media/<video_id>/source.mp4
+```
+
+The completed-media path is the convenient entry point for replaying a video.
+`data/processed/<video_id>/normalized/source.mp4` remains the pipeline's
+authoritative source and is never moved or re-encoded. On a single NTFS volume
+the published file is a hardlink; when that is unavailable, the pipeline uses
+an atomic copy after verification. Set `publishing.enabled` to `false` to
+disable publishing, or adjust `completed_media_root`, `prefer_hardlink`, and
+`copy_fallback` in private `config/config.json`.
+
 ## Tests
 
 For contributors, install `requirements-dev.txt` after the main requirements,
@@ -191,10 +222,15 @@ python -m pytest -q
 ├── media.json
 ├── metadata.json
 └── processing.json
+
+completed_media/
+└── <video_id>/
+    └── source.mp4
 ```
 
 `normalized/source.mp4` is the authoritative A/V source. Original files are
-preserved locally; stream-copy muxing never re-encodes the video.
+preserved locally; stream-copy muxing never re-encodes the video. The
+completed-media copy/link is only created after Knowledge succeeds.
 
 ## Provenance
 

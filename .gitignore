@@ -20,7 +20,18 @@ config/config.json
 
 # User data and generated output
 data/*
+data/raw/
 logs/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+.worker.lock
+
+# M2 Formal archive assets (binary media and manifests)
+archive/
 
 # Media and generated visual evidence
 *.mp4

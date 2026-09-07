@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local-video-knowledge.org/dy/collection_item_v1.schema.json",
+  "title": "CollectionItemV1",
+  "description": "Canonical representation of a collected content item across platforms (Douyin, Bilibili, YouTube) for Downloader and Source Intake pipelines.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "platform",
+    "source_type",
+    "platform_content_id",
+    "source_url",
+    "content_type",
+    "description",
+    "author",
+    "published_at",
+    "collection",
+    "media"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "collection-item-v1",
+      "description": "Schema contract version. Changes must bump the version identifier."
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["douyin", "bilibili", "youtube", "other"],
+      "description": "Originating content platform."
+    },
+    "source_type": {
+      "type": "string",
+      "const": "collection",
+      "description": "Intake source channel. Strictly 'collection' (收藏), distinct from 'like' or 'history'."
+    },
+    "platform_content_id": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z_-]+$",
+      "description": "Platform-native unique content identifier (e.g. Douyin aweme_id). Immutable primary identity."
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Permanent canonical human-accessible web URL (e.g. https://www.douyin.com/video/<aweme_id>). Never a transient CDN URL."
+    },
+    "content_type": {
+      "type": "string",
+      "enum": ["video", "image_album", "audio", "article"],
+      "description": "Normalized media format type."
+    },
+    "title": {
+      "type": ["string", "null"],
+      "description": "Explicit content title or headline if provided by creator/platform, null if omitted."
+    },
+    "description": {
+      "type": "string",
+      "description": "Primary textual description or caption accompanying the content."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Normalized topics, challenges, or hashtags without '#'."
+    },
+    "author": {
+      "type": "object",
+      "required": [
+        "platform_author_id",
+        "display_name"
+      ],
+      "properties": {
+        "platform_author_id": {
+          "type": "string",
+          "description": "Platform internal numeric or alphanumeric author ID (e.g. Douyin uid)."
+        },
+        "sec_uid": {
+          "type": ["string", "null"],
+          "description": "Douyin-specific security user ID used for web routing (https://www.douyin.com/user/<sec_uid>)."
+        },
+        "username": {
+          "type": ["string", "null"],
+          "description": "Public custom handle or unique ID (e.g. Douyin unique_id or short_id)."
+        },
+        "display_name": {
+          "type": "string",
+          "description": "Author display nickname."
+        },
+        "avatar_url": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Author avatar thumbnail URL at observation time."
+        },
+        "profile_url": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Canonical web URL to the author's public profile."
+        },
+        "signature": {
+          "type": ["string", "null"],
+          "description": "Author self-introduction or bio at observation time."
+        }
+      },
+      "additionalProperties": false
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the author originally published the content (mapped strictly from create_time). NEVER the collection time."
+    },
+    "collection": {
+      "type": "object",
+      "required": [
+        "first_seen_at",
+        "last_seen_at",
+        "active",
+        "observed_count"
+      ],
+      "properties": {
+        "first_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 UTC timestamp when the collector first observed this item in user's collection. Immutable across sync runs."
+        },
+        "last_seen_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 UTC timestamp when the collector most recently confirmed this item present in collection."
+        },
+        "reappeared_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO 8601 UTC timestamp if this item was re-favorited / reappeared at the collection head after prior ingestion, null otherwise."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "True if currently confirmed present in user's collection; false if uncollected or deleted."
+        },
+        "observed_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Cumulative count of sync runs that observed this item."
+        },
+        "last_seen_position": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "1-based position in the collection list during the most recent observation."
+        }
+      },
+      "additionalProperties": false
+    },
+    "media": {
+      "type": "object",
+      "required": [
+        "has_audio"
+      ],
+      "properties": {
+        "duration_seconds": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Video duration in fractional seconds."
+        },
+        "duration_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Video duration in integer milliseconds."
+        },
+        "width": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Primary visual stream pixel width."
+        },
+        "height": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Primary visual stream pixel height."
+        },
+        "aspect_ratio": {
+          "type": ["string", "null"],
+          "description": "Aspect ratio or resolution label (e.g. '16:9', '9:16', '720p', '1080p')."
+        },
+        "cover_url": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Best-effort primary cover image URL at observation time."
+        },
+        "cover_asset_id": {
+          "type": ["string", "null"],
+          "description": "Platform-internal immutable cover storage key (e.g. Douyin TOS URI)."
+        },
+        "video_asset_id": {
+          "type": ["string", "null"],
+          "description": "Platform-internal immutable video stream storage key (e.g. Douyin TOS URI)."
+        },
+        "images": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "required": ["index", "url"],
+            "properties": {
+              "index": { "type": "integer", "minimum": 0 },
+              "asset_id": { "type": ["string", "null"] },
+              "url": { "type": "string", "format": "uri" },
+              "width": { "type": ["integer", "null"] },
+              "height": { "type": ["integer", "null"] }
+            },
+            "additionalProperties": false
+          },
+          "description": "Ordered image array for image_album (图文) items, null for videos."
+        },
+        "has_audio": {
+          "type": "boolean",
+          "description": "True if audio soundtrack exists."
+        },
+        "audio_title": {
+          "type": ["string", "null"],
+          "description": "Associated soundtrack title."
+        },
+        "audio_author": {
+          "type": ["string", "null"],
+          "description": "Soundtrack artist or creator name."
+        },
+        "download_input": {
+          "type": ["object", "null"],
+          "description": "Transient signed URLs passed directly to Downloader. Volatile with short expiration; DO NOT use as permanent storage.",
+          "properties": {
+            "fetched_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Timestamp when signed download URLs were extracted."
+            },
+            "play_urls": {
+              "type": "array",
+              "items": { "type": "string", "format": "uri" },
+              "description": "Direct playback CDN URLs."
+            },
+            "bitrate_variants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "gear_name": { "type": "string" },
+                  "quality_type": { "type": "integer" },
+                  "bit_rate": { "type": "integer" },
+                  "format": { "type": "string" },
+                  "url": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "chapters": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "required": ["timestamp_ms", "title"],
+        "properties": {
+          "timestamp_ms": { "type": "integer", "minimum": 0 },
+          "title": { "type": "string" },
+          "description": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      },
+      "description": "Structured video chapters or outline timestamps when available."
+    },
+    "statistics": {
+      "type": ["object", "null"],
+      "description": "Public social metrics snapshot at observation time.",
+      "properties": {
+        "digg_count": { "type": ["integer", "null"] },
+        "comment_count": { "type": ["integer", "null"] },
+        "share_count": { "type": ["integer", "null"] },
+        "collect_count": { "type": ["integer", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "raw_ref": {
+      "type": "object",
+      "required": [
+        "platform_raw_type",
+        "archive_file",
+        "sha256",
+        "item_index"
+      ],
+      "properties": {
+        "platform_raw_type": {
+          "type": "string",
+          "description": "Descriptor of the source schema (e.g. 'douyin.listcollection.aweme_struct')."
+        },
+        "archive_file": {
+          "type": "string",
+          "description": "Relative file path to the preserved raw response page archive."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "description": "SHA-256 checksum of the raw response page archive."
+        },
+        "item_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index of this item in the archive's aweme_list array."
+        }
+      },
+      "additionalProperties": false,
+      "description": "Pointer to the archived raw response payload without repeating raw JSON in DB."
+    },
+    "legacy_compatibility": {
+      "type": ["object", "null"],
+      "description": "Compatibility projection layer for legacy local-video-knowledge v1 schema.",
+      "properties": {
+        "collected_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Legacy alias pointing to collection.first_seen_at. True collect time is unobservable in listcollection."
+        },
+        "author_name": { "type": "string" },
+        "author_id": { "type": "string" },
+        "title": { "type": ["string", "null"] },
+        "original_filename": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

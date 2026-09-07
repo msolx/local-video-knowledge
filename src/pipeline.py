@@ -16,8 +16,9 @@ from .backends import transcribe
 from .backends.llm import ensure_segment_ids, knowledge_fingerprint
 from .config import AppConfig
 from .intake import MediaAsset, prepare_assets
-from .knowledge import build_knowledge, ensure_source_schema
+from .knowledge import build_knowledge, ensure_source_schema, visual_usage_summary
 from .knowledge.lifecycle import ensure_lm_studio_loaded, record_lifecycle, unload_lm_studio
+from .publishing import publish_completed_media
 from .provenance import source_for_media
 from .render import render_markdown, render_transcript
 from .storage import atomic_write_json, atomic_write_text, copy_file_atomically, load_json, sha256_file, utc_now
@@ -25,7 +26,7 @@ from .visual import build_visual_evidence
 from .visual.service import visual_pipeline_fingerprint
 
 
-STAGES = ("source", "audio", "asr", "visual", "knowledge")
+STAGES = ("source", "audio", "asr", "visual", "knowledge", "publish_media")
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
 
 
@@ -205,6 +206,7 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
         knowledge_md_path = video_dir / "knowledge.md"
 
         def archive_source() -> dict[str, Any]:
+            existing_metadata = load_json(metadata_path, {})
             discovered_source = source_for_media(asset.media.get("video_source"), asset.media.get("audio_source"))
             source_record = discovered_source or {
                 "platform": "other", "source_type": "manual_file", "source_url": None, "platform_content_id": None,
@@ -220,6 +222,10 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
                 "media": asset.media, "duration": asset.probe.duration, "format": asset.probe.format_name,
                 "size_bytes": asset.probe.size_bytes, "video": asset.probe.video, "audio": asset.probe.audio,
             }
+            # Publishing is a user-facing mirror of the authoritative source.
+            # Preserve it when a forced source stage refreshes metadata.
+            if isinstance(existing_metadata.get("published_media"), dict):
+                metadata["published_media"] = existing_metadata["published_media"]
             atomic_write_json(metadata_path, metadata)
             _update_index(config, source_hash, video_id)
             return {"artifacts": [str(metadata_path), str(video_dir / "media.json"), str(source)]}
@@ -299,15 +305,46 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
                 atomic_write_json(metadata_path, metadata)
             transcript = load_json(transcript_path)["segments"]
             generated, provenance = build_knowledge(metadata, transcript, config.raw["llm"], config.raw.get("knowledge", {}), video_dir, visual_document)
+            existing_document = load_json(knowledge_json_path, {})
             document = {
                 "schema_version": provenance["schema_version"], "video_id": video_id, "generated_at": utc_now(),
                 "provenance": provenance, "knowledge": generated,
             }
+            if isinstance(existing_document.get("media"), dict):
+                document["media"] = existing_document["media"]
             atomic_write_json(knowledge_json_path, document)
             atomic_write_text(knowledge_md_path, render_markdown(metadata, generated))
             return {"artifacts": [str(knowledge_json_path), str(knowledge_md_path)], "model": provenance, "model_load": load_detail}
 
         _stage(state, state_path, "knowledge", force, run_knowledge)
+
+        def publish_media() -> dict[str, Any]:
+            if not knowledge_json_path.is_file() or not knowledge_md_path.is_file():
+                raise StageError("Completed-media publishing requires successful knowledge.json and knowledge.md artifacts.")
+            settings = config.raw.get("publishing", {})
+            if not bool(settings.get("enabled", True)):
+                return {"enabled": False, "status": "disabled"}
+            published = publish_completed_media(source, video_id, config.data_root, settings, config.ffprobe)
+            metadata = load_json(metadata_path)
+            metadata["published_media"] = published.as_metadata_reference()
+            atomic_write_json(metadata_path, metadata)
+            document = load_json(knowledge_json_path)
+            generated = document["knowledge"]
+            # Existing assets may predate v2.3.3.  Add the program-derived
+            # usage summary while publishing; no ASR or LLM rerun is needed.
+            generated["visual_usage"] = visual_usage_summary(generated, visual_document)
+            document["knowledge"] = generated
+            document["media"] = published.as_knowledge_reference(video_id)
+            atomic_write_json(knowledge_json_path, document)
+            atomic_write_text(knowledge_md_path, render_markdown(metadata, generated))
+            return {
+                "artifacts": [str(published.path), str(knowledge_json_path), str(knowledge_md_path), str(metadata_path)],
+                "publish_mode": published.publish_mode,
+                "relative_path": published.relative_path,
+                "skipped": published.skipped,
+            }
+
+        _stage(state, state_path, "publish_media", force, publish_media)
         return video_dir
     finally:
         lock.unlink(missing_ok=True)

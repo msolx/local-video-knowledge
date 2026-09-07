@@ -1,0 +1,91 @@
+"""Collector subsystem public API."""
+
+from .base import BaseCollector, CollectorMode, CollectorRunResult, CollectorStatus
+from .config import CollectorConfig
+from .errors import CollectorError, CollectorErrorCode
+from .raw_archive import (
+    DiskRawArchiver,
+    RawArchiveConflictError,
+    RawArchiveCorruptError,
+    RawArchiveError,
+    RawArchiveHashMismatchError,
+    RawArchiveInvalidInputError,
+    RawArchiveIOError,
+    RawArchiveNotFoundError,
+    RawArchiveRef,
+    RawArchiveSensitiveFieldError,
+    RawArchiveUnknownError,
+)
+from .repository import (
+    DEFAULT_PLATFORM,
+    DEFAULT_SCOPE_ID,
+    SqliteMetadataRepository,
+)
+from .repository_errors import (
+    RepositoryConflictError,
+    RepositoryCorruptError,
+    RepositoryError,
+    RepositoryErrorCode,
+    RepositoryInvalidInputError,
+    RepositoryIOError,
+    RepositoryNotFoundError,
+    RepositoryNotInitializedError,
+    RepositorySchemaError,
+    RepositoryStateConflictError,
+    RepositoryTransactionError,
+)
+from .repository_models import (
+    CollectionItemRecord,
+    CollectionObservationRecord,
+    PriorCollectionState,
+    StagedItemRecord,
+    SyncRunMode,
+    SyncRunRecord,
+    SyncRunStatus,
+    SyncState,
+)
+from .service import CollectorService
+
+__all__ = [
+    "BaseCollector",
+    "CollectorConfig",
+    "CollectorError",
+    "CollectorErrorCode",
+    "CollectorMode",
+    "CollectorRunResult",
+    "CollectorService",
+    "CollectorStatus",
+    "DiskRawArchiver",
+    "RawArchiveRef",
+    "RawArchiveError",
+    "RawArchiveInvalidInputError",
+    "RawArchiveIOError",
+    "RawArchiveConflictError",
+    "RawArchiveHashMismatchError",
+    "RawArchiveSensitiveFieldError",
+    "RawArchiveNotFoundError",
+    "RawArchiveCorruptError",
+    "RawArchiveUnknownError",
+    "SqliteMetadataRepository",
+    "DEFAULT_SCOPE_ID",
+    "DEFAULT_PLATFORM",
+    "RepositoryError",
+    "RepositoryErrorCode",
+    "RepositoryInvalidInputError",
+    "RepositoryNotInitializedError",
+    "RepositorySchemaError",
+    "RepositoryConflictError",
+    "RepositoryStateConflictError",
+    "RepositoryIOError",
+    "RepositoryCorruptError",
+    "RepositoryTransactionError",
+    "RepositoryNotFoundError",
+    "SyncRunStatus",
+    "SyncRunMode",
+    "SyncState",
+    "SyncRunRecord",
+    "CollectionItemRecord",
+    "CollectionObservationRecord",
+    "StagedItemRecord",
+    "PriorCollectionState",
+]

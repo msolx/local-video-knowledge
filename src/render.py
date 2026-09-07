@@ -27,7 +27,8 @@ def evidence_text(evidence: list[dict[str, Any]], max_gap_seconds: float = 6.0) 
 def visual_evidence_text(evidence: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for item in evidence:
-        label = f"{timestamp(item['start'])}–{timestamp(item['end'])} [{item['id']}]"
+        source_label = {"visual_ocr": "OCR", "visual_vlm": "VLM"}.get(item.get("source_type"), "Visual")
+        label = f"[{source_label}] {timestamp(item['start'])}–{timestamp(item['end'])} [{item['id']}]"
         text = item.get("text") or item.get("content")
         if isinstance(text, dict):
             text = "; ".join(f"{key}: {value}" for key, value in text.items())
@@ -50,6 +51,23 @@ def _append_visual(lines: list[str], item: dict[str, Any]) -> None:
         lines += ["画面证据：", *visual_evidence_text(visual), ""]
 
 
+def _append_visual_usage(lines: list[str], knowledge: dict[str, Any]) -> None:
+    usage = knowledge.get("visual_usage", {})
+    ocr = usage.get("ocr", {}) if isinstance(usage, dict) else {}
+    vlm = usage.get("vlm", {}) if isinstance(usage, dict) else {}
+    lines += ["# 视觉处理", ""]
+    if ocr.get("executed", False):
+        used = ", ".join(ocr.get("used_by_knowledge_ids", [])) or "无"
+        lines += ["OCR：已使用", f"- 产生视觉证据：{ocr.get('completed_evidence_count', 0)} 条", f"- 被 Knowledge 使用：{used}", ""]
+    else:
+        lines += ["OCR：未使用", ""]
+    if vlm.get("invoked", False):
+        used = ", ".join(vlm.get("used_by_knowledge_ids", [])) or "无"
+        lines += ["VLM：已调用", f"- 调用次数：{vlm.get('call_count', 0)}", f"- 产生视觉证据：{vlm.get('completed_evidence_count', 0)} 条", f"- 被 Knowledge 使用：{used}", ""]
+    else:
+        lines += ["VLM：未使用", ""]
+
+
 def render_markdown(metadata: dict[str, Any], knowledge: dict[str, Any]) -> str:
     tags, conclusion, source = knowledge.get("keywords", []), knowledge["one_sentence_conclusion"], knowledge.get("source", {})
     lines = ["---", f"video_id: {metadata['video_id']}", f"title: {metadata.get('title') or 'untitled'}", f"duration_seconds: {metadata['duration']}", "tags:"]
@@ -57,7 +75,13 @@ def render_markdown(metadata: dict[str, Any], knowledge: dict[str, Any]) -> str:
     lines += ["---", "", "# 来源", "", f"平台：{PLATFORM_LABELS.get(source.get('platform'), 'Other')}", f"作者：{source.get('author_name') or '未提供'}"]
     if source.get("source_url"):
         lines.append(f"原视频：{source['source_url']}")
-    lines += [f"采集时间：{source.get('collected_at') or '未提供'}", "", "# 一句话结论", "", "_模型综合摘要（llm_synthesis，非视频中的直接主张）_", "", conclusion["content"], "", f"音频证据：{evidence_text(conclusion['evidence'])}", ""]
+    lines += [f"采集时间：{source.get('collected_at') or '未提供'}"]
+    published_media = metadata.get("published_media")
+    if isinstance(published_media, dict):
+        lines += ["", "本地视频：", "", f"`{published_media.get('absolute_path', '')}`", "", "媒体相对路径：", "", f"`{published_media.get('relative_path', '')}`", "", "视频 ID：", "", f"`{metadata['video_id']}`"]
+    lines += [""]
+    _append_visual_usage(lines, knowledge)
+    lines += ["# 一句话结论", "", "_模型综合摘要（llm_synthesis，非视频中的直接主张）_", "", conclusion["content"], "", f"音频证据：{evidence_text(conclusion['evidence'])}", ""]
     _append_visual(lines, conclusion)
     grouped = {kind: [] for kind in TYPE_HEADINGS}
     for point in knowledge["knowledge_points"]:

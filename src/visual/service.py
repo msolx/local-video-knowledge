@@ -301,8 +301,13 @@ def build_visual_evidence(source: Path, transcript: list[dict[str, Any]], ffmpeg
                 vlm_backend = LMStudioVLMBackend(vlm_config) if vlm_config.get("backend") == "lm_studio" else OpenAICompatibleVLMBackend(vlm_config)
                 vlm_backend.load()
             trigger_text = "\n".join(str(transcript_index[segment_id].get("text", "")) for segment_id in request["trigger_segment_ids"] if segment_id in transcript_index)
+            # Count an attempted model invocation even if the transport/model
+            # fails afterwards.  The final visual evidence still records the
+            # unresolved result, while usage reporting can truthfully say VLM
+            # was invoked rather than confusing it with an OCR-only request.
+            vlm_timing["calls"] += 1
             answer, seconds = vlm_backend.answer(request, frames, item, trigger_text)
-            vlm_timing["calls"] += 1; vlm_timing[f"{request['id']}_seconds"] = seconds
+            vlm_timing[f"{request['id']}_seconds"] = seconds
             vlm_item = {"id": f"ve_vlm_{request['id'][3:]}", "visual_request_id": request["id"], "source_type": "visual_vlm",
                         "frame_ids": [frame["frame_id"] for frame in frames], "start": request["start"], "end": request["end"], **answer}
             evidence.append(vlm_item); request["status"] = answer["status"]

@@ -113,6 +113,48 @@ def _attach_visual_evidence(knowledge: dict[str, Any], visual_evidence: list[dic
     return result
 
 
+def visual_usage_summary(knowledge: dict[str, Any], visual_document: dict[str, Any]) -> dict[str, Any]:
+    """Report visual work separately from visual evidence cited by final points.
+
+    This is deliberately program-owned: an LLM selects evidence IDs, while this
+    function determines their source backend and whether the final Knowledge
+    points actually retained them.
+    """
+    visual_items = list(visual_document.get("visual_evidence", []))
+    index = {item.get("id"): item for item in visual_items if item.get("id")}
+    timing = visual_document.get("timing", {}) if isinstance(visual_document.get("timing"), dict) else {}
+    vlm_timing = timing.get("vlm", {}) if isinstance(timing.get("vlm"), dict) else {}
+    call_count = int(vlm_timing.get("calls", 0) or 0)
+
+    def completed_count(source_type: str) -> int:
+        return sum(item.get("source_type") == source_type and item.get("status") == "completed" for item in visual_items)
+
+    def used_by(source_type: str) -> list[str]:
+        used: list[str] = []
+        for point in knowledge.get("knowledge_points", []):
+            visual_ids = point.get("visual_evidence_ids", [])
+            if any(index.get(visual_id, {}).get("source_type") == source_type for visual_id in visual_ids):
+                point_id = point.get("id")
+                if point_id and point_id not in used:
+                    used.append(point_id)
+        return used
+
+    ocr_executed = any(item.get("source_type") == "visual_ocr" for item in visual_items)
+    return {
+        "ocr": {
+            "executed": ocr_executed,
+            "completed_evidence_count": completed_count("visual_ocr"),
+            "used_by_knowledge_ids": used_by("visual_ocr"),
+        },
+        "vlm": {
+            "invoked": call_count > 0,
+            "call_count": call_count,
+            "completed_evidence_count": completed_count("visual_vlm"),
+            "used_by_knowledge_ids": used_by("visual_vlm"),
+        },
+    }
+
+
 def _chunk_payload(chunk: TranscriptChunk, chunk_fingerprint: str, local_fingerprint: str, generated: dict[str, Any], provenance: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "knowledge-v2.3-local",
@@ -169,6 +211,7 @@ def build_knowledge(
         generated, local_provenance = generate_knowledge(metadata, transcript, llm_config, identity_config, visual_items)
         generated = _attach_provenance(_attach_visual_evidence(generated, visual_items), video_id, source)
         generated["unresolved_visual_references"] = [item for item in visual_items if item.get("status") == "unresolved_visual_reference"]
+        generated["visual_usage"] = visual_usage_summary(generated, visual_document)
         provenance = {
             **local_provenance, "knowledge_fingerprint": base_fingerprint,
             "execution": {"mode": mode, "estimated_transcript_tokens": total_tokens, "chunk_count": 1,
@@ -203,6 +246,7 @@ def build_knowledge(
     generated, merge_provenance = generate_global_merge(local_items, transcript, llm_config)
     generated = _attach_provenance(_attach_visual_evidence(generated, visual_items), video_id, source)
     generated["unresolved_visual_references"] = [item for item in visual_items if item.get("status") == "unresolved_visual_reference"]
+    generated["visual_usage"] = visual_usage_summary(generated, visual_document)
     merge_fingerprint = _hash({"local_extraction_fingerprint": local_base_fingerprint, "merge_prompt": llm_config.get("prompt_version"), "model": llm_config, "visual_fingerprint": visual_fingerprint})
     provenance = {
         "backend": merge_provenance["backend"], "model": merge_provenance["model"], "model_parameters": merge_provenance["model_parameters"],

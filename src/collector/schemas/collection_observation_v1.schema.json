@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.local-video-knowledge.org/dy/collection_observation_v1.schema.json",
+  "title": "CollectionObservationV1",
+  "description": "Event record created when a collection sync run observes an item at a specific position in a specific page.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "observation_id",
+    "sync_run_id",
+    "platform",
+    "platform_content_id",
+    "observed_at",
+    "page_number",
+    "position_in_page",
+    "global_rank_seen",
+    "page_request_cursor",
+    "page_response_cursor",
+    "is_first_observation",
+    "is_reappearance",
+    "raw_ref"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "collection-observation-v1",
+      "description": "Schema version for collection observation events."
+    },
+    "observation_id": {
+      "type": "string",
+      "description": "Unique observation identifier (e.g. obs_<sync_run_id>_<platform_content_id>)."
+    },
+    "sync_run_id": {
+      "type": "string",
+      "description": "Foreign key reference to sync-run-v1 session."
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["douyin", "bilibili", "youtube", "other"],
+      "description": "Source platform."
+    },
+    "platform_content_id": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z_-]+$",
+      "description": "Platform content ID observed (e.g. aweme_id)."
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the observation."
+    },
+    "page_number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1-based page index within this sync run."
+    },
+    "position_in_page": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "0-based element index within the returned page array."
+    },
+    "global_rank_seen": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "1-based sequential rank observed from cursor=0 in this sync run."
+    },
+    "page_request_cursor": {
+      "type": "string",
+      "description": "The cursor parameter sent when requesting this page."
+    },
+    "page_response_cursor": {
+      "type": "string",
+      "description": "The next_cursor returned in the response envelope of this page."
+    },
+    "is_first_observation": {
+      "type": "boolean",
+      "description": "True if this content ID had never been seen prior to this sync run."
+    },
+    "is_reappearance": {
+      "type": "boolean",
+      "description": "True if this content ID was already known in DB but reappeared at collection head (re-favorite)."
+    },
+    "raw_ref": {
+      "type": "object",
+      "required": [
+        "platform_raw_type",
+        "archive_file",
+        "sha256",
+        "item_index"
+      ],
+      "properties": {
+        "platform_raw_type": { "type": "string" },
+        "archive_file": { "type": "string" },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "item_index": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

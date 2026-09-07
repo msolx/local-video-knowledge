@@ -8,6 +8,12 @@
     "minimum_file_age_seconds": 30,
     "copy_source_into_archive": true
   },
+  "publishing": {
+    "enabled": true,
+    "completed_media_root": "completed_media",
+    "prefer_hardlink": true,
+    "copy_fallback": true
+  },
   "intake": {
     "modified_time_window_seconds": 900,
     "ambiguity_margin": 0.04
