@@ -5,13 +5,13 @@
 
 # Milestone M2 · Douyin Automatic Ingestion MVP 最终完整交接与冷启动恢复手册
 
-> **Authoritative Master Entry Point (唯一权威入口与主文档)**  
-> **文档物理路径**：[`G:\antigravity-cli\dy\M2_DOUYIN_COMPLETE_HANDOFF.md`](file:///G:/antigravity-cli/dy/M2_DOUYIN_COMPLETE_HANDOFF.md)  
-> **MASTER DOC VERSIONING STATUS**：  
-> - **OUTSIDE CURRENT GIT REPOSITORY**（位于 Git 仓库 `G:\local_pc_project` 外部）  
-> - **NOT VERSIONED BY local_pc_project Git**（当前不被项目 Git 跟踪版本）  
-> - **未来演进建议**：未来执行正式 M2 归档 checkpoint 时，推荐在仓库内保留一份 `docs/M2_DOUYIN_COMPLETE_HANDOFF.md` 作为版本化快照（versioned snapshot），而本文件 `G:\antigravity-cli\dy\M2_DOUYIN_COMPLETE_HANDOFF.md` 继续作为顶层编排主入口（orchestration master copy）。本轮审计严格遵循规范，**禁止向仓库内复制或执行 Git Commit**。  
-> 任何后续接入或恢复本项目的 AI Agent 或工程师，**仅阅读本文档即可建立完整的系统认知、运行流水线、执行验证并排查故障**，无需翻阅几十份历史开发过程记录。
+> **Versioned Snapshot Entry Point (仓库内版本化快照与恢复主入口)**  
+> **文档物理路径**：[`docs/M2_DOUYIN_COMPLETE_HANDOFF.md`](file:///G:/local_pc_project/docs/M2_DOUYIN_COMPLETE_HANDOFF.md)  
+> **MASTER DOC MAPPING**：  
+> - **EXTERNAL MASTER**: [`G:\antigravity-cli\dy\M2_DOUYIN_COMPLETE_HANDOFF.md`](file:///G:/antigravity-cli/dy/M2_DOUYIN_COMPLETE_HANDOFF.md)（位于 Git 仓库外部，顶层编排主入口）  
+> - **VERSIONED SNAPSHOT STATUS**: **TRACKED IN GIT**（在 `local_pc_project` 仓库内纳入版本控制）  
+> - **REVISION HISTORY**: 经历 `107a1ca` (初始 M2 归档 checkpoint, Tag: `m2-douyin-complete`) 与本次 Post-Checkpoint 修正 (Tag: `m2-douyin-complete-r1`)。  
+> 任何后续接入或恢复本项目的 AI Agent 或工程师，**在克隆仓库后仅阅读本文档即可建立完整的系统认知、运行流水线、执行验证并排查故障**。
 
 ---
 
@@ -20,6 +20,7 @@
 | 项目属性 | 实际值 / 状态 |
 | :--- | :--- |
 | **Project Name** | Personal Knowledge Pipeline / Douyin Collection Ingestion |
+| **Versioned Handoff Path**| [`docs/M2_DOUYIN_COMPLETE_HANDOFF.md`](file:///G:/local_pc_project/docs/M2_DOUYIN_COMPLETE_HANDOFF.md) (仓库内版本化快照) |
 | **Master Handoff Path**| [`G:\antigravity-cli\dy\M2_DOUYIN_COMPLETE_HANDOFF.md`](file:///G:/antigravity-cli/dy/M2_DOUYIN_COMPLETE_HANDOFF.md) (仓库外权威主文档) |
 | **Repository Root** | `G:\local_pc_project` |
 | **Current Milestone** | **Milestone M2: Douyin Automatic Ingestion MVP** |
@@ -32,10 +33,12 @@
 | **Next Milestone Status** | **NOT STARTED / FROZEN (严禁擅自启动)** |
 
 ### Git & Runtime Metadata Snapshot
-- **Document Generated At**: `2026-09-07T15:45:00+08:00`
+- **Document Reconciled At**: `2026-09-07T20:00:00+08:00`
 - **Git Branch**: `main`
-- **Git HEAD Commit**: `29ee1e97246ceeffd9454de28a331fb96bc7c6c1`
-- **Working Tree State**: `DIRTY` (包含 11 个修改文件与 54 个未跟踪模块/测试文件，属于 M2 本地增量演进产物，保持现状，禁止擅自 reset 或 commit)
+- **Initial Checkpoint Commit**: `107a1ca4a9d90618cfd0a324a989c4f5c880e48a`
+- **Initial Checkpoint Tag**: `m2-douyin-complete`
+- **Recovery Revision Tag**: `m2-douyin-complete-r1`
+- **Working Tree State**: `CLEAN (CODE & TRACKED ARTIFACTS)` (所有源码、测试套件、JSON Schemas、依赖清单及文档快照均已安全提交入库；用户媒体资产与运行时 DB 安全排除在 Git 之外)
 - **Main Python Venv**: `G:\local_pc_project\.venv` (`Python 3.12.3`)
 - **Worker Python Venv**: `G:\local_pc_project\.venv-f2` (`Python 3.12.3`, `F2 0.0.1.7`)
 - **Dedicated Profile**: `G:\antigravity-cli\dy\runtime\chrome-profile` (`EXISTS`)
@@ -45,10 +48,16 @@
 - **Worker Lock File**: `G:\local_pc_project\data\.worker.lock` (仅运行期间创建，停机期间不存在)
 
 > [!CAUTION]
-> ### CRITICAL RECOVERY WARNING (冷启动灾备与代码恢复关键警示)
-> 1. **Git 仓库未包含全部 M2 增量代码**：当前 Git 远端分支 `origin/main` 以及本地 HEAD commit（`29ee1e9`）**绝不包含** M2 阶段本地演进出的 11 个修改文件与 54 个未跟踪文件（包括 `src/collector/`, `src/downloader/` 核心实现及 `tests/test_*` 全套测试套件）。
-> 2. **单纯 `git clone` 无法恢复 M2**：如果仅在全新机器执行 `git clone <remote_url>`，拉取下来的代码**缺少全部采集与下载管线**！
-> 3. **完整灾备要求**：灾备与冷启动恢复**必须完整打包或持久化宿主机的物理工作树目录**（`G:\local_pc_project` 全量工作区，包括未跟踪代码、`data/metadata.db`、`data/downloader_state.sqlite3` 以及 `G:\antigravity-cli\dy\runtime\chrome-profile`），绝不可单纯依赖 Git 远程仓库。
+> ### CRITICAL RECOVERY & PERSISTENCE NOTICE (灾备与恢复双层充要性判定)
+> 1. **CODE RECOVERY SUFFICIENCY: YES (代码/测试恢复充分)**  
+>    Git 远端仓库（分支 `main` / 标签 `m2-douyin-complete-r1`）**已经完整包含** M2 全部生产源码（`src/collector/`, `src/downloader/`）、21 个 M2 测试套件、配置模板（`config/config.example.json`）、主环境依赖清单（`requirements.txt`）、Worker 环境依赖清单（`requirements-f2-worker.txt`）以及本版本化交接手册。全新克隆（`git clone`）并检出标签即可 100% 完整复现 M2 代码工程与自动化测试能力。
+> 2. **FULL RUNTIME RECOVERY SUFFICIENCY: NO (Git 无法恢复运行时状态与用户数据)**  
+>    出于隐私与存储安全设计规范，**Git 仓库绝不包含用户数据、生产数据库与物理媒体资产**。如需恢复业务连续性，除 `git clone` 外仍需额外恢复或重新初始化以下运行时状态：
+>    - 采集元数据库：`G:\local_pc_project\data\metadata.db`（记录已采集作品、增量水位游标）
+>    - 下载状态库：`G:\local_pc_project\data\downloader_state.sqlite3`（记录下载作业状态机）
+>    - 原始证据审计目录：`G:\local_pc_project\data\raw`
+>    - 正式归档媒体资产：`G:\local_pc_project\archive`（已归档的视频、图集及 `asset_manifest.json`）
+>    - 专用 Chrome Profile：`G:\antigravity-cli\dy\runtime\chrome-profile`（或重新运行登录认证）
 
 ---
 
@@ -817,36 +826,51 @@ Test-Path "G:\local_pc_project\data\.worker.lock"
 # 30. Recovery & Backup Critical Files (灾备与关键数据资产恢复指南)
 
 > [!CAUTION]
-> ### CRITICAL RECOVERY NOTICE: 本地工作区完整灾备不可替代
-> 如 Section 1 所述，Git 远程仓库未包含本地修改及 54 个未跟踪模块。**灾备恢复必须完整备份以下物理路径**：
+> ### CRITICAL RECOVERY NOTICE: 运行时数据与用户资产冷备说明
+> Git 仓库现已完整包含代码与测试能力（`CODE RECOVERY SUFFICIENCY = YES`），但**绝不包含用户生产数据与多媒体文件**。生产灾备必须定期冷备以下物理路径：
 
 | 资产等级 | 资产类别 | 实际绝对路径 | 备份策略 / 恢复方法 |
 | :---: | :--- | :--- | :--- |
-| **CRITICAL** | **代码与测试仓库** | `G:\local_pc_project` | **物理全量备份整个工作目录**（单纯 `git clone` 无法恢复 M2） |
-| **CRITICAL** | **元数据库** | `G:\local_pc_project\data\metadata.db` | 定期 SQLite `.backup` 冷备，严禁直接删库 |
-| **CRITICAL** | **下载状态库** | `G:\local_pc_project\data\downloader_state.sqlite3`| 记录作业执行历史，定期冷备 |
-| **CRITICAL** | **正式归档资产** | `G:\local_pc_project\archive` | 包含所有下载完成的高清视频与图集，需重点持久化 |
-| **CRITICAL** | **原始响应证据** | `G:\local_pc_project\data\raw` | 采集真实性审计证据链，建议保留 |
+| **MANAGED** | **代码与测试仓库** | `G:\local_pc_project` | **Git 远程仓库已托管**（`git clone` + `m2-douyin-complete-r1` 即可恢复代码与测试能力） |
+| **CRITICAL** | **元数据库** | `G:\local_pc_project\data\metadata.db` | 记录采集元数据与增量游标，定期 SQLite `.backup` 冷备，严禁直接删库 |
+| **CRITICAL** | **下载状态库** | `G:\local_pc_project\data\downloader_state.sqlite3`| 记录下载作业状态机与幂等历史，定期冷备 |
+| **CRITICAL** | **正式归档资产** | `G:\local_pc_project\archive` | 包含所有下载完成的高清视频与图集，需物理异地冷备 |
+| **CRITICAL** | **原始响应证据** | `G:\local_pc_project\data\raw` | 采集真实性审计证据链，建议定期归档 |
 | **CRITICAL** | **认证配置文件** | `G:\antigravity-cli\dy\runtime\chrome-profile` | 宿主机登录会话，如换机需重新扫码登录生成 |
 | **REGENERABLE**| 任务隔离沙箱 | `G:\local_pc_project\data\sandbox` | 临时运行目录，崩溃或成功后均可由 GC 安全清理 |
 | **REGENERABLE**| 运行日志文件 | `G:\local_pc_project\logs` | 历史诊断日志，可定期归档或清理 |
-| **REGENERABLE**| 虚拟运行环境 | `G:\local_pc_project\.venv` & `.venv-f2` | 可由 `requirements.txt` 重新安装重建 |
+| **REGENERABLE**| 虚拟运行环境 | `G:\local_pc_project\.venv` & `.venv-f2` | 可由 `requirements.txt` 与 `requirements-f2-worker.txt` 重新安装重建 |
 
 ---
 
 # 31. Git & Repository State (版本控制实况)
 
 - **当前分支**：`main`
-- **当前 HEAD Commit**：`29ee1e97246ceeffd9454de28a331fb96bc7c6c1`
-- **代码库实况分析**：
-  - 11 个追踪文件受修改（包含配置文件、文档及历史代码适配）。
-  - 54 个未跟踪模块与测试（`src/collector/`, `src/downloader/`, `tests/test_*`）。
-  - **规范约束**：保持当前工作树现状，不要为“收尾”强行执行未经规划的 Git Commit 或 Reset。
-- **.gitignore 忽略项**：
-  - `data/` 目录中的 SQLite 数据库（`*.db`, `*.sqlite3`）
+- **Initial Checkpoint Commit**：`107a1ca4a9d90618cfd0a324a989c4f5c880e48a`
+- **Initial Checkpoint Tag**：`m2-douyin-complete`
+- **Recovery Revision Tag**：`m2-douyin-complete-r1`
+- **远程追踪**：`origin/main`（已同步至 GitHub `https://github.com/msolx/local-video-knowledge.git`）
+- **核心文件物理路径核验 (git ls-tree)**：
+  - 配置模板：[`config/config.example.json`](file:///G:/local_pc_project/config/config.example.json)
+  - 版本化交接文档：[`docs/M2_DOUYIN_COMPLETE_HANDOFF.md`](file:///G:/local_pc_project/docs/M2_DOUYIN_COMPLETE_HANDOFF.md)
+  - 主环境依赖清单：[`requirements.txt`](file:///G:/local_pc_project/requirements.txt)
+  - Worker 隔离依赖清单：[`requirements-f2-worker.txt`](file:///G:/local_pc_project/requirements-f2-worker.txt)
+- **.gitignore 过滤规则**：
+  - `data/` 目录中的 SQLite 数据库（`*.db`, `*.sqlite3*`）
   - `archive/` 物理归档媒体目录
   - `runtime/chrome-profile` 用户隐私目录
+  - `.worker.lock` 进程互斥锁
   - `.venv*/` 虚拟环境目录
+
+### CHECKPOINT COMPOSITION NOTE (检查点组成说明)
+commit `107a1ca` 是一个“完整可测试的仓库状态检查点”。除 M2 全部采集（DY-C01~C10）与下载（DY-D01~D10）组件、测试和依赖外，还包含了工作树中少量既有的 `v2.3.3` 工作基线改动（如知识抽取与视觉引用服务层变更 `src/publishing.py`, `src/knowledge/`, `src/pipeline.py`, `src/render.py`, `src/visual/service.py` 及其测试用例）。
+- 这些变更**并非 M2 交付范围**，亦**并非在当前检查点启动 M3**。
+- 其保留在提交中是为了完整复现当时已 100% 通过的 672 项自动化回归测试基线。
+- **Milestone M3 状态继续保持：NOT STARTED / FROZEN**。
+
+### RECOVERY SUFFICIENCY SUMMARY (恢复充分性判定)
+- **CODE RECOVERY SUFFICIENCY: YES**（通过 `git clone` + `m2-douyin-complete-r1` 即可完全恢复 M2 的源码、测试、契约、依赖配置与文档）。
+- **FULL RUNTIME RECOVERY SUFFICIENCY: NO**（Git 本身不包含运行时数据；需要额外恢复 `data/metadata.db`、`data/downloader_state.sqlite3`、`data/raw/`、`archive/` 与登录态 Chrome Profile）。
 
 ---
 
@@ -970,9 +994,9 @@ Test-Path "G:\local_pc_project\data\.worker.lock"
 若未来在全新对话或由新 Agent 恢复本项目，请严格遵守以下 10 步标准化检查流程：
 
 1. **第 1 步**：完整阅读本文档（`G:\antigravity-cli\dy\M2_DOUYIN_COMPLETE_HANDOFF.md`），建立全局认知。
-2. **第 2 步**：检查 Git 状态（`git status`），注意工作树处于 DIRTY 状态属于正常 M2 留存，严禁擅自 reset 或 commit。
+2. **第 2 步**：检查 Git 状态（`git status`），确认处于已打标的干净基线（`m2-douyin-complete` 或 `m2-douyin-complete-r1`），代码树受控。
 3. **第 3 步**：核实关键运行时环境与依赖路径是否存在（Python 3.12, F2 0.0.1.7, ffmpeg/ffprobe）。
-4. **第 4 步**：执行只读数据库完整性检查，确认 `metadata.db` 与 `downloader_state.sqlite3` 未损坏（PRAGMA integrity_check）。
+4. **第 4 步**：执行只读数据库完整性检查，确认 `data/metadata.db` 与 `data/downloader_state.sqlite3` 未损坏（PRAGMA integrity_check）。
 5. **第 5 步**：运行 `verify_archived_asset()` 校验已有 C10 归档资产，确认历史成果完整。
 6. **第 6 步**：在主环境下运行离线集成回归测试（`pytest tests/test_collector_downloader_e2e.py -q`），确认全部 PASS。
 7. **第 7 步**：检查 F2 Worker 环境（`G:\local_pc_project\.venv-f2\Scripts\python.exe -m pytest tests/test_downloader_worker.py -k "not live" -q`）。
@@ -1017,6 +1041,9 @@ Test-Path "G:\local_pc_project\data\.worker.lock"
 | **Formal archive** | `G:\local_pc_project\archive` | **`EXISTS`** |
 | **Sandbox root** | `G:\local_pc_project\data\sandbox` | **`EXISTS`** |
 | **Docs root** | `G:\antigravity-cli\dy` | **`EXISTS`** |
+| **Versioned Snapshot** | `G:\local_pc_project\docs\M2_DOUYIN_COMPLETE_HANDOFF.md` | **`EXISTS`** |
+| **Config Template** | `G:\local_pc_project\config\config.example.json` | **`EXISTS`** |
+| **Worker Requirements**| `G:\local_pc_project\requirements-f2-worker.txt` | **`EXISTS`** |
 | **Key config** | `G:\local_pc_project\config\config.json` | **`EXISTS`** |
 | **C10 formal video** | `G:\local_pc_project\archive\douyin\7681603850364521734` | **`EXISTS`** |
 | **C10 formal album** | `G:\local_pc_project\archive\douyin\7682038498466993905` | **`EXISTS`** |
