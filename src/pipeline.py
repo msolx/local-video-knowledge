@@ -114,8 +114,8 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 
 def _stage(state: dict[str, Any], state_path: Path, name: str, force: bool, action: Callable[[], dict[str, Any]]) -> None:
     previous = state["stages"][name]
-    if previous.get("status") == "completed" and not force:
-        logging.info("[%s] already complete; skipped", name)
+    if previous.get("status") in ("completed", "skipped") and not force:
+        logging.info("[%s] already %s; skipped", name, previous.get("status"))
         return
     started = time.perf_counter()
     state["stages"][name] = {"status": "running", "started_at": utc_now()}
@@ -131,15 +131,17 @@ def _stage(state: dict[str, Any], state_path: Path, name: str, force: bool, acti
         state["status"], state["error"] = "FAILED", {"stage": name, "message": state["stages"][name]["error"]}
         atomic_write_json(state_path, state)
         raise
+    status = detail.get("status", "completed")
     state["stages"][name] = {
-        "status": "completed", "started_at": state["stages"][name]["started_at"], "finished_at": utc_now(),
+        "status": status, "started_at": state["stages"][name]["started_at"], "finished_at": utc_now(),
         "duration_seconds": round(time.perf_counter() - started, 3), **detail
     }
     _save_state(state_path, state)
-    logging.info("[%s] completed in %.2fs", name, state["stages"][name]["duration_seconds"])
+    logging.info("[%s] %s in %.2fs", name, status, state["stages"][name]["duration_seconds"])
 
 
 def _acquire_lock(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
     lock = directory / ".processing.lock"
     if lock.exists():
         pid: int | None = None
@@ -169,13 +171,13 @@ def _update_index(config: AppConfig, source_hash: str, video_id: str) -> None:
     atomic_write_json(index_path, index)
 
 
-def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> Path:
+def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False, stop_after: str | None = None) -> Path:
     """Run ASR/knowledge only after Intake has produced a verified complete A/V source."""
     source = asset.normalized_source
     if not source.is_file():
         raise FileNotFoundError(source)
-    if not asset.probe.audio or not asset.probe.video:
-        raise StageError("Pipeline requires Intake to provide a verified audio+video normalized source.")
+    if not asset.probe.video:
+        raise StageError("Pipeline requires a verified video source.")
     video_id, source_hash, video_dir = asset.video_id, asset.content_hash, asset.video_dir
     lock = _acquire_lock(video_dir)
     try:
@@ -207,14 +209,37 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
 
         def archive_source() -> dict[str, Any]:
             existing_metadata = load_json(metadata_path, {})
-            discovered_source = source_for_media(asset.media.get("video_source"), asset.media.get("audio_source"))
-            source_record = discovered_source or {
-                "platform": "other", "source_type": "manual_file", "source_url": None, "platform_content_id": None,
-                "author_name": None, "author_id": None, "title": asset.title, "published_at": None,
-                "collected_at": utc_now(), "original_filename": Path(asset.media.get("video_source") or source).name,
-            }
+            if asset.media.get("input_type") == "canonical_formal_asset" or asset.media.get("source_provenance") or asset.media.get("source_metadata"):
+                sm = asset.media.get("source_metadata") or {}
+                sp = asset.media.get("source_provenance") or {}
+                author = sm.get("author")
+                author_name = author.get("display_name") if isinstance(author, dict) else (author if isinstance(author, str) else None)
+                author_id = author.get("platform_author_id") if isinstance(author, dict) else None
+                resolved_platform = asset.media.get("platform") or sp.get("platform") or sm.get("platform") or (asset.video_id.split("_", 1)[0] if "_" in asset.video_id else "douyin")
+                resolved_cid = asset.media.get("platform_content_id") or sp.get("platform_content_id") or (asset.video_id.split("_", 1)[1] if "_" in asset.video_id else asset.video_id)
+                source_record = {
+                    "platform": resolved_platform,
+                    "source_type": "canonical_formal_asset",
+                    "source_url": sm.get("source_url") or f"https://www.douyin.com/video/{resolved_cid}",
+                    "platform_content_id": resolved_cid,
+                    "author_name": author_name,
+                    "author_id": author_id,
+                    "title": asset.title,
+                    "published_at": sm.get("published_at"),
+                    "collected_at": sp.get("archived_at") or utc_now(),
+                    "original_filename": Path(asset.media.get("video_source") or source).name,
+                    "source_provenance": sp,
+                    "source_metadata": sm,
+                }
+            else:
+                discovered_source = source_for_media(asset.media.get("video_source"), asset.media.get("audio_source"))
+                source_record = discovered_source or {
+                    "platform": "other", "source_type": "manual_file", "source_url": None, "platform_content_id": None,
+                    "author_name": None, "author_id": None, "title": asset.title, "published_at": None,
+                    "collected_at": utc_now(), "original_filename": Path(asset.media.get("video_source") or source).name,
+                }
             metadata = {
-                "video_id": video_id, "content_hash": source_hash, "title": asset.title, "author": None,
+                "video_id": video_id, "content_hash": source_hash, "title": asset.title, "author": source_record.get("author_name"),
                 "source": source_record, "source_url": source_record.get("source_url"), "publish_time": source_record.get("published_at"),
                 "download_time": source_record.get("collected_at") or utc_now(),
                 "language": config.raw["asr"].get("faster_whisper", {}).get("language", "zh"),
@@ -231,8 +256,12 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
             return {"artifacts": [str(metadata_path), str(video_dir / "media.json"), str(source)]}
 
         _stage(state, state_path, "source", force, archive_source)
+        if stop_after == "source":
+            return video_dir
 
         def extract_audio() -> dict[str, Any]:
+            if not asset.probe.audio:
+                return {"artifacts": [], "audio_format": "none", "status": "skipped", "reason": "NO_AUDIO"}
             if not config.ffmpeg.exists():
                 raise StageError(f"FFmpeg was not found: {config.ffmpeg}")
             temporary = audio_path.with_suffix(".tmp.wav")
@@ -242,11 +271,43 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
             return {"artifacts": [str(audio_path)], "audio_format": "mono/16kHz/pcm_s16le"}
 
         _stage(state, state_path, "audio", force, extract_audio)
+        if stop_after == "audio":
+            return video_dir
 
         def run_asr() -> dict[str, Any]:
+            source_meta = load_json(metadata_path, {}).get("source", {})
+            if not asset.probe.audio or state["stages"].get("audio", {}).get("reason") == "NO_AUDIO":
+                payload = {
+                    "video_id": video_id,
+                    "canonical_id": video_id,
+                    "platform": source_meta.get("platform", "douyin"),
+                    "platform_content_id": source_meta.get("platform_content_id"),
+                    "language": None,
+                    "segments": [],
+                    "status": "NO_AUDIO",
+                    "provenance": {"backend": "none", "reason": "NO_AUDIO"},
+                    "source": source_meta,
+                    "content_hash": source_hash,
+                    "source_video": str(source),
+                }
+                atomic_write_json(transcript_path, payload)
+                atomic_write_text(video_dir / "transcript.md", "_No speech audio track present in source video (NO_AUDIO)._\n")
+                return {"artifacts": [str(transcript_path), str(video_dir / "transcript.md")], "status": "skipped", "reason": "NO_AUDIO", "model": {"backend": "none"}}
+
             segments, provenance = transcribe(audio_path, config.raw["asr"], video_dir / "asr-command-output.json")
             segments, _ = ensure_segment_ids(segments)
-            payload = {"video_id": video_id, "language": config.raw["asr"].get("faster_whisper", {}).get("language", "zh"), "segments": segments, "provenance": provenance}
+            payload = {
+                "video_id": video_id,
+                "canonical_id": video_id,
+                "platform": source_meta.get("platform", "douyin"),
+                "platform_content_id": source_meta.get("platform_content_id"),
+                "language": config.raw["asr"].get("faster_whisper", {}).get("language", "zh"),
+                "segments": segments,
+                "provenance": provenance,
+                "source": source_meta,
+                "content_hash": source_hash,
+                "source_video": str(source),
+            }
             atomic_write_json(transcript_path, payload)
             atomic_write_text(video_dir / "transcript.md", render_transcript(segments))
             return {"artifacts": [str(transcript_path), str(video_dir / "transcript.md")], "model": provenance}
@@ -261,6 +322,9 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
                 transcript_payload["segments"] = identified_segments
                 atomic_write_json(transcript_path, transcript_payload)
                 atomic_write_text(video_dir / "transcript.md", render_transcript(identified_segments))
+
+        if stop_after == "asr":
+            return video_dir
 
         transcript_segments = load_json(transcript_path)["segments"]
         visual_config = config.raw.get("visual_evidence", {})
@@ -286,6 +350,8 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
                     "pipeline_fingerprint": desired_visual_fingerprint}
 
         _stage(state, state_path, "visual", force, run_visual)
+        if stop_after == "visual":
+            return video_dir
         visual_document = load_json(visual_transcript_path, {"visual_evidence": [], "requests": [], "fingerprints": {}})
 
         current_knowledge = load_json(knowledge_json_path, {})
@@ -317,6 +383,8 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
             return {"artifacts": [str(knowledge_json_path), str(knowledge_md_path)], "model": provenance, "model_load": load_detail}
 
         _stage(state, state_path, "knowledge", force, run_knowledge)
+        if stop_after == "knowledge":
+            return video_dir
 
         def publish_media() -> dict[str, Any]:
             if not knowledge_json_path.is_file() or not knowledge_md_path.is_file():
@@ -350,6 +418,28 @@ def process_asset(config: AppConfig, asset: MediaAsset, force: bool = False) -> 
         lock.unlink(missing_ok=True)
 
 
+def process_canonical_asset(
+    config: AppConfig,
+    canonical_asset: Any,
+    force: bool = False,
+    stop_after: str | None = "asr",
+) -> Path:
+    """Process a verified M2 formal local asset directly through the media pipeline.
+
+    By default, executes up to ASR (M3-02 boundary), bypassing legacy manual incoming
+    file copies and stream re-muxing while guaranteeing the formal archive remains read-only.
+    """
+    from .media_adapter import UnsupportedContentTypeError
+
+    if not getattr(canonical_asset, "is_video", False) or not getattr(canonical_asset, "video_path", None):
+        content_type = getattr(getattr(canonical_asset, "content_type", None), "value", str(getattr(canonical_asset, "content_type", "unknown")))
+        raise UnsupportedContentTypeError(
+            f"Cannot run video pipeline on non-video asset ({content_type}): {getattr(canonical_asset, 'canonical_id', 'unknown')}"
+        )
+    media_asset = canonical_asset.to_pipeline_media_asset(config)
+    return process_asset(config, media_asset, force=force, stop_after=stop_after)
+
+
 def discover_inputs(config: AppConfig) -> list[Path]:
     incoming = config.data_root / "incoming" / "manual"
     incoming.mkdir(parents=True, exist_ok=True)
@@ -362,7 +452,36 @@ def discover_inputs(config: AppConfig) -> list[Path]:
     ]
 
 
-def run(config: AppConfig, input_path: Path | None, video_id: str | None, force: bool) -> int:
+def run(
+    config: AppConfig,
+    input_path: Path | None,
+    video_id: str | None,
+    force: bool,
+    canonical_id: str | None = None,
+    stop_after: str | None = None,
+) -> int:
+    if canonical_id:
+        from .media_adapter import CanonicalMediaAssetAdapter
+        archive_root = Path("archive")
+        metadata_db = config.data_root / "metadata.db"
+        if not metadata_db.is_file():
+            metadata_db = Path("data/metadata.db")
+        adapter = CanonicalMediaAssetAdapter(
+            archive_root=archive_root,
+            metadata_db_path=metadata_db if metadata_db.is_file() else None,
+            validate_hashes=True,
+        )
+        cid = canonical_id.replace("douyin_", "")
+        canonical_asset = adapter.load_from_content_id(cid, platform="douyin")
+        effective_stop = None if stop_after in (None, "all") else stop_after
+        try:
+            result = process_canonical_asset(config, canonical_asset, force=force, stop_after=effective_stop)
+            logging.info("Completed canonical asset: %s", result)
+            return 0
+        except Exception:
+            logging.exception("Failed processing canonical asset: %s", canonical_id)
+            return 1
+
     # Pairing needs sibling files, so explicit --input still probes its containing directory.
     inputs = discover_inputs(config)
     requested: Path | None = None
@@ -401,7 +520,8 @@ def run(config: AppConfig, input_path: Path | None, video_id: str | None, force:
 
     for asset in assets:
         try:
-            result = process_asset(config, asset, force=force)
+            effective_stop = None if stop_after in (None, "all") else stop_after
+            result = process_asset(config, asset, force=force, stop_after=effective_stop)
             completed_dirs.append(result)
             (config.data_root / "failed" / f"{asset.video_id}.json").unlink(missing_ok=True)
             logging.info("Completed: %s", result)
@@ -428,5 +548,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config/config.json", help="Path to JSON configuration.")
     parser.add_argument("--input", type=Path, help="One video file. Omit to scan data_root/incoming/manual.")
     parser.add_argument("--video-id", help="Run one already-normalized asset by its stable video ID.")
+    parser.add_argument("--canonical-id", help="Process formal M2 asset by platform_content_id or canonical_id.")
+    parser.add_argument("--stop-after", default="all", choices=["source", "audio", "asr", "visual", "knowledge", "publish_media", "all"], help="Stage after which to stop (default: all).")
     parser.add_argument("--force", action="store_true", help="Re-run already completed stages for the selected video(s).")
     return parser

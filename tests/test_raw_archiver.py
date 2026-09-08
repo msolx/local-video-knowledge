@@ -512,7 +512,9 @@ def test_17_safe_path_naming(archiver: DiskRawArchiver, sample_payload: dict[str
 
 def test_18_gitignore_coverage() -> None:
     """Case 18: Project .gitignore contains rule covering data/raw/."""
-    gitignore_path = Path("G:/local_pc_project/.gitignore")
+    gitignore_path = Path(__file__).resolve().parent.parent / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path = Path("G:/local_pc_project/.gitignore")
     assert gitignore_path.exists()
     content = gitignore_path.read_text(encoding="utf-8")
     assert "data/raw/" in content or "data/*" in content

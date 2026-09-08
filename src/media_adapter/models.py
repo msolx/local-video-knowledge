@@ -188,7 +188,7 @@ class CanonicalMediaAsset:
 
         media_record = {
             "input_type": "canonical_formal_asset",
-            "status": "complete_av",
+            "status": "complete_av" if (probe.video and probe.audio) else "video_only",
             "content_hash": content_hash,
             "video_source": str(self.video_path),
             "audio_source": str(self.audio_path) if self.audio_path else None,
@@ -197,6 +197,9 @@ class CanonicalMediaAsset:
             "normalized_probe": probe.as_dict(),
             "source_metadata": self.source_metadata,
             "source_provenance": self.source_provenance,
+            "platform": self.platform,
+            "platform_content_id": self.platform_content_id,
+            "canonical_id": self.canonical_id,
         }
 
         return MediaAsset(
@@ -208,3 +211,11 @@ class CanonicalMediaAsset:
             probe=probe,
             media=media_record,
         )
+
+    def process_asr(self, config: AppConfig, force: bool = False) -> Path:
+        """Processes this video formal asset through the existing ASR pipeline.
+
+        Extracts 16kHz mono audio from PRIMARY_VIDEO and produces verified transcript evidence.
+        """
+        from src.pipeline import process_canonical_asset
+        return process_canonical_asset(config, self, force=force, stop_after="asr")

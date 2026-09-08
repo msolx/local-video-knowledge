@@ -73,3 +73,35 @@
   - **Non-blocking Resilience**: SQLite access is strictly read-only (`?mode=ro`). Any SQLite error (file missing, schema mismatch, lock, corruption, invalid JSON) is caught and handled gracefully: `source_metadata` safely defaults to `{}` without failing or blocking asset loading.
   - **Zero Network**: Adapter operations remain entirely local and offline.
 
+---
+
+## Decision 7: Video / ASR Integration Pipeline Architecture (M3-02)
+- **Context**: Milestone M2 stores formal video assets in `archive/douyin/<content_id>/` with `asset_manifest.json`. M1 media pipeline (`src/pipeline.py`) was designed for incoming manual directory drops and performed 6 full stages (`source`, `audio`, `asr`, `visual`, `knowledge`, `publish_media`). M3-02 requires integrating formal video assets directly into audio extraction and ASR without unnecessary re-ingest, secondary copying, or premature visual/knowledge processing.
+- **Decision**:
+  - **Direct Streamline via `CanonicalMediaAsset`**:
+    - `CanonicalMediaAsset` is projected to `MediaAsset` via `to_pipeline_media_asset(config)`, binding canonical provenance (`canonical_id`, `platform`, `platform_content_id`).
+    - Introduced `process_canonical_asset(config, canonical_asset, force=False, stop_after="asr")` in `src/pipeline.py` and `CanonicalMediaAsset.process_asr(config, force=False)` in `src/media_adapter/models.py`.
+    - Formal assets are never copied to `data/incoming/manual`. Raw originals are linked/referenced directly by absolute path.
+  - **Stage Cutoff Support (`stop_after`)**:
+    - Added `stop_after: str | None = None` parameter to `pipeline.process_asset()`, allowing execution to stop cleanly after any stage (`"source"`, `"audio"`, `"asr"`, `"visual"`, `"knowledge"`).
+    - For M3-02, default is `stop_after="asr"`.
+  - **Strict Immutability of Formal Assets**:
+    - Processing outputs are written solely to `data/processed/<video_id>/` (`manifest.json`, `audio.wav`, `transcript.json`, `transcript.md`).
+    - The source `archive/` directory is **strictly read-only**. Zero files are written to, modified in, or deleted from `archive/`.
+  - **Audio Extraction Source Invariant**:
+    - Audio extraction uses strictly `PRIMARY_VIDEO` as input. FFmpeg extracts 16kHz mono PCM WAV.
+    - External URLs or synthetic tracks are never used as speech source.
+  - **Explicit `NO_AUDIO` State Handling**:
+    - If a video has no audio track (`not asset.probe.audio`), `extract_audio` records `{"status": "skipped", "reason": "NO_AUDIO", "artifacts": []}`.
+    - `run_asr` handles `NO_AUDIO` gracefully with empty segments, `status: "NO_AUDIO"`, and a clear markdown notice. No fake empty transcripts are hallucinated.
+    - Pipeline stages check `previous.get("status") in ("completed", "skipped")` to preserve skip semantics.
+  - **Idempotency and Resume Protocol**:
+    - Before running ASR, the pipeline verifies whether `transcript.json` exists with matching `source_video_hash` (or matching video SHA-256) and identical ASR model settings (`model_name`, `backend`, `compute_type`, `beam_size`, etc.).
+    - When matching, ASR inference is skipped, achieving sub-second resume without GPU load.
+    - `force=True` bypasses cached artifacts when explicit re-transcription is requested.
+  - **Provenance Preservation**:
+    - `transcript.json` is enriched with canonical provenance (`canonical_id`, `platform`, `platform_content_id`, `source_video`, `content_hash`).
+- **Rejected Alternatives**:
+  - *Symlinking or copying formal video into `data/incoming/`*: Violates storage efficiency and creates orphan files.
+  - *Writing transcripts or audio directly into `archive/`*: Violates M2 formal archive immutability and separation of raw assets from processed intelligence.
+  - *Running visual OCR/VLM or knowledge summarization during M3-02*: Violates task staging boundaries (M3-03 and M3-04 handle visual inspection and knowledge synthesis).

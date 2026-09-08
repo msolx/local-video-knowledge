@@ -18,7 +18,9 @@ def main() -> int:
     file_handler = logging.FileHandler(logs_directory / f"pipeline-{datetime.now():%Y-%m-%d}.log", encoding="utf-8")
     file_handler.setFormatter(formatter)
     logging.basicConfig(level=logging.INFO, handlers=[stream_handler, file_handler])
-    return run(config, arguments.input, arguments.video_id, arguments.force)
+    canonical_id = getattr(arguments, "canonical_id", None)
+    stop_after = getattr(arguments, "stop_after", None)
+    return run(config, arguments.input, arguments.video_id, arguments.force, canonical_id=canonical_id, stop_after=stop_after)
 
 
 if __name__ == "__main__":

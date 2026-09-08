@@ -1171,7 +1171,8 @@ class TestCLIAndNonInterference:
             "--archive-root",
             str(arch),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10.0, cwd=r"G:\local_pc_project")
+        repo_root = Path(__file__).resolve().parent.parent
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10.0, cwd=str(repo_root))
         assert res.returncode == 0
         assert "Worker run_once completed" in res.stdout
 
@@ -1195,7 +1196,8 @@ class TestCLIAndNonInterference:
             "--archive-root",
             str(arch),
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10.0, cwd=r"G:\local_pc_project")
+        repo_root = Path(__file__).resolve().parent.parent
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10.0, cwd=str(repo_root))
         assert res.returncode == 0
         assert "Worker drain completed" in res.stdout
 
