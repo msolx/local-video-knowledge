@@ -282,6 +282,18 @@ class CanonicalMediaAssetAdapter:
                 if row and row[0]:
                     data = json.loads(row[0])
                     if isinstance(data, dict):
+                        try:
+                            extra = cur.execute(
+                                "SELECT first_seen_at, published_at FROM collection_items WHERE platform_content_id = ? AND platform = ? LIMIT 1",
+                                (platform_content_id, platform),
+                            ).fetchone()
+                            if extra:
+                                if extra[0] and "first_seen_at" not in data:
+                                    data["first_seen_at"] = extra[0]
+                                if extra[1] and "published_at" not in data:
+                                    data["published_at"] = extra[1]
+                        except Exception:
+                            pass
                         return data
         except Exception as exc:
             logger.debug("Could not read collector metadata for %s:%s: %s", platform, platform_content_id, exc)

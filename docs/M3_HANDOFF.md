@@ -3,8 +3,8 @@
 > **Authoritative Handoff Document for Milestone M3**  
 > **Repository Root**: `G:\local_pc_project\personal-knowledge-pipeline`  
 > **Milestone Status**: `STARTED / IN_PROGRESS`  
-> **Current Focus**: Task M3-03 Image Album OCR / VLM Integration (`DONE`)  
-> **Next Focus**: Task M3-04 Metadata & Provenance Binding (`TODO`)  
+> **Current Focus**: Task M3-04 Metadata & Provenance Binding (`DONE`)  
+> **Next Focus**: Task M3-05 Long Media Chunking (`TODO`)  
 > **Handoff Target**: Cross-Agent / Cross-Harness Compatible (Gemini 3.8 Flash, OpenCode + GLM 5.3, Codex)
 
 ---
@@ -18,8 +18,9 @@
 | **Git Branch** | `feat/m3-media-knowledge-integration` |
 | **Base Commit** | `ffe8aa1d7e937e91a6270a042e603e0563d402e2` (M2 recovery anchor `m2-douyin-complete-r1`) |
 | **M2 Subsystem State**| **FROZEN / UNMODIFIED** (`src/collector/`, `src/downloader/` untouched) |
-| **Current Task** | **M3-03: Image Album OCR / VLM Integration** (`DONE`) |
-| **Active Test Baseline** | **706 passed, 10 skipped** (Main `.venv`: 666 M2 baseline + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
+| **Current Task** | **M3-04: Metadata & Provenance Binding** (`DONE`) |
+| **Active Test Baseline** | **723 passed, 10 skipped** (Main `.venv`: 666 M2 baseline + 16 M3-01 + 10 M3-02 + 14 M3-03 + 17 M3-04 tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
+
 
 
 ---
@@ -115,6 +116,36 @@
 - **[`src/media_adapter/models.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/media_adapter/models.py)**:
   - Added `@property def size_bytes(self) -> int: return self.byte_size` to `AlbumImageArtifact`.
   - Added `CanonicalMediaAsset.process_visual(config, force=False, stop_after=None) -> Path`.
+  - Added `CanonicalMediaAsset.bind_evidence(config, force=False, processed_dir=None) -> Path`.
+
+### 2.4 Package: `src/provenance.py` and Metadata & Evidence Provenance Binding (M3-04)
+- **[`src/provenance.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/provenance.py)**:
+  - `EvidenceItem`: Lightweight dataclass representing an observed piece of evidence.
+    - Fields: `evidence_id`, `modality` (`speech`, `visual_text`, `visual_description`), `source_artifact`, `temporal`, `sequence`, `model_provenance`, `payload`, `verification_status`.
+    - Invariant: `verification_status: "not_checked"`.
+  - `extract_source_metadata_snapshot(canonical_asset, processed_dir)`:
+    - Extracts `title`, `author_name`, `author_id`, `published_at`, `first_seen_at`, `source_url`, `tags`, and `enrichment_status`.
+    - Distinguishes creator publication time (`published_at`) from collector observation time (`first_seen_at`).
+    - Strictly NO fake `collected_at`.
+  - `extract_formal_asset_binding(canonical_asset)`:
+    - Binds formal asset metadata: `canonical_id`, `platform`, `platform_content_id`, `content_type`, `asset_root`, `manifest_path`, `archived_at`, `source_provenance`, and ordered `artifacts` (`PRIMARY_VIDEO`, `ALBUM_IMAGE`, `AUDIO_TRACK`).
+  - `collect_evidence_items(canonical_asset, processed_dir)`:
+    - Video ASR segments: maps each speech segment to 1-indexed `segment_order`, exact `start`/`end`/`duration`, bound to `PRIMARY_VIDEO` and video SHA-256.
+    - Album visual frames: maps each OCR frame to 1-indexed `sequence_index`, bound to `ALBUM_IMAGE` WebP file and SHA-256, with confidence, lines, polygons, and boxes.
+    - Unresolved VLM references: records `modality: "visual_description"` with status `unresolved_visual_reference`.
+    - Handles `NO_AUDIO` video gracefully with 0 segments and explicit status.
+  - `compute_manifest_fingerprint(canonical_id, source_meta, formal_asset, evidence_items, model_prov)`:
+    - Computes deterministic SHA-256 over identity, metadata snapshot, formal artifacts, evidence items, and model settings.
+  - `build_evidence_manifest(canonical_asset, config, processed_dir, force=False)`:
+    - Assembles unified evidence manifest.
+    - Returns cached manifest instantly (< 2ms) if fingerprint matches and `force=False`.
+  - `write_evidence_manifest(canonical_asset, config, processed_dir, force=False)`:
+    - Atomically writes `data/processed/<canonical_id>/evidence_manifest.json`.
+  - `load_evidence_manifest(path)` and `verify_evidence_manifest(path)`:
+    - Verification and loading helpers.
+- **[`src/pipeline.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/pipeline.py)**:
+  - Added `--stop-after evidence` to CLI parser.
+  - `process_canonical_asset` and `process_canonical_album` automatically invoke `write_evidence_manifest` when completing ASR or visual stages.
 
 ---
 
@@ -173,17 +204,40 @@
   13. `test_13_optional_bgm_does_not_affect_ocr`: Verifies optional BGM is preserved in metadata/media while audio/ASR stages are skipped.
   14. `test_14_real_c10_album_offline_smoke`: Integration smoke test with real C10 formal album (`7682038498466993905`: 3 WebP images) on GPU.
 
-### 3.4 Regression Baseline Tracking (672/4 -> 682/10 -> 692/10 -> 706/10)
+### 3.4 Evidence & Provenance Binding Test Suite (`tests/test_evidence_provenance.py`)
+- **17/17 tests passing** in 0.42s.
+- Covers all 17 mandatory requirements:
+  1. `test_01_video_asr_evidence_provenance`: Video ASR evidence contains complete model provenance (backend, model, compute_type, beam_size, status).
+  2. `test_02_asr_segment_exact_source_binding`: Video segment evidence binds to PRIMARY_VIDEO, file name, SHA-256, temporal start/end/duration, and 1-indexed segment order.
+  3. `test_03_album_ocr_image_level_provenance`: Album OCR items bind to ALBUM_IMAGE, WebP filename, image SHA-256, byte size, confidence, lines (polygons/boxes), and sequence index.
+  4. `test_04_sequence_index_preserved`: Album images maintain 1-indexed order even if input sequence is shuffled.
+  5. `test_05_vlm_unresolved_provenance`: Unresolved VLM references produce modality `visual_description` with `unresolved_visual_reference`, `verification_status: "not_checked"`.
+  6. `test_06_metadata_enrichment_binding`: When `metadata.db` is present, `source_metadata` is snapshot-bound with `enrichment_status: "enriched"`, `title`, `author_name`, `author_id`, `published_at`, `first_seen_at`, `source_url`, `tags`.
+  7. `test_07_metadata_db_absent_resilience`: When `metadata.db` is absent, `source_metadata` gracefully falls back with `enrichment_status: "unenriched"` without failing.
+  8. `test_08_published_at_vs_first_seen_at_semantics`: Creator publication timestamp (`published_at`) and collector observation timestamp (`first_seen_at`) have distinct values and semantics.
+  9. `test_09_no_fake_collected_at`: `source_metadata` in `evidence_manifest.json` does NOT contain any fabricated `collected_at` field.
+  10. `test_10_no_audio_video_evidence`: Videos without audio produce 0 speech items, with `status: "NO_AUDIO"` in model provenance.
+  11. `test_11_partial_album_evidence`: Album with partial OCR failure captures all items with corresponding status (`failed` or `completed`).
+  12. `test_12_deterministic_ordering`: Multiple calls produce bit-for-bit identical evidence item ordering and identical fingerprints.
+  13. `test_13_repeated_binding_idempotent`: Repeated invocation with unchanged inputs returns cached file in sub-second time (< 2ms).
+  14. `test_14_evidence_or_config_change_invalidates_fingerprint`: Altering an evidence item or model setting alters the fingerprint and triggers re-generation.
+  15. `test_15_archive_immutability`: Formal archive files in `archive/` are never written to, modified, or deleted.
+  16. `test_16_real_c10_video_offline_smoke`: Offline integration smoke test with real C10 video (`7681603850364521734`) verifying full provenance chain: Douyin CID -> Formal Video MP4 -> SHA-256 `3959...` -> exact 184 segments -> ASR model faster-whisper large-v3 -> `evidence_manifest.json`.
+  17. `test_17_real_c10_album_offline_smoke`: Offline integration smoke test with real C10 album (`7682038498466993905`) verifying full provenance chain: Douyin CID -> Formal Album WebP images -> SHA-256s -> sequence indices 1..3 -> PaddleOCR text/polygons -> unresolved VLM -> `evidence_manifest.json`.
+
+### 3.5 Regression Baseline Tracking (672/4 -> 682/10 -> 692/10 -> 706/10 -> 723/10)
 - **M2 Checkpoint Baseline**: 672 passed, 4 skipped (Total collected: 676)
 - **M3-01 Main Suite**: 682 passed, 10 skipped (Total collected: 692 = 676 M2 tests + 16 M3-01 tests)
 - **M3-02 Main Suite**: 692 passed, 10 skipped (Total collected: 702 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests)
-- **Current M3-03 Main Suite**: **706 passed, 10 skipped** (Total collected: 716 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests)
+- **M3-03 Main Suite**: 706 passed, 10 skipped (Total collected: 716 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests)
+- **Current M3-04 Main Suite**: **723 passed, 10 skipped** (Total collected: 733 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests + 17 M3-04 tests)
   - Old tests executing: 666 passed, 10 skipped
   - New M3-01 tests: 16 passed
   - New M3-02 tests: 10 passed
   - New M3-03 tests: 14 passed
-  - Total: 666 + 16 + 10 + 14 = 706 passed in 74.65s.
-- **Worker Suite (`.venv-f2`)**: 55 passed, 10 deselected in 5.33s.
+  - New M3-04 tests: 17 passed
+  - Total: 666 + 16 + 10 + 14 + 17 = 723 passed in 73.05s.
+- **Worker Suite (`.venv-f2`)**: 55 passed, 10 deselected in 5.14s.
 - **The 4 Pre-Existing M2 Skips (Worker Environment Isolation)**:
   1. `tests/test_f2_backend.py:885`: `Requires F2 installed in worker environment (.venv-f2)`
   2. `tests/test_f2_backend.py:988`: `Requires F2 installed in worker environment (.venv-f2)`
@@ -208,11 +262,12 @@
 
 ---
 
-## 4. Known Limitations & Non-Goals in M3-03
+## 4. Known Limitations & Non-Goals in M3-04
 
-1. **Task Scope Boundary**: M3-03 strictly addressed image album visual OCR inspection and optional VLM reference generation. Full knowledge extraction/synthesis (`knowledge.json`, `knowledge.md`) is deferred to M3-04.
-2. **Offline VLM Resilience**: Local LM Studio VLM server is offline by default. Visual OCR runs independently and succeeds 100% without VLM; missing VLM generates `unresolved_visual_reference` gracefully.
+1. **Epistemic Invariant (Evidence Is Not Truth)**: M3-04 strictly binds model-observed evidence (ASR speech segments and OCR image frame text/polygons). It does NOT assert ground truth or factual veracity (`verification_status: "not_checked"` across all items).
+2. **Task Scope Boundary (Zero Knowledge Extraction)**: M3-04 strictly stops after evidence binding. No claim extraction, no opinion extraction, no summarization, no entity linking, and no Obsidian/RAG notes are generated.
 3. **No Network**: Zero network requests or live Douyin API calls.
+4. **Archive Immutability**: Formal archive files in `archive/` remain 100% read-only and unmodified.
 
 ---
 
@@ -222,72 +277,78 @@
 ================================================================================
                     NEXT_AGENT_START_HERE (CROSS-AGENT PROTOCOL)
 ================================================================================
-Target Audience: Any LLM / Agent (Gemini, OpenCode + GLM 5.3, Codex)
-Current Status : M3-03 DONE, ready for M3-04.
+Target Audience: Any LLM / Agent (Gemini 3.8 Flash, OpenCode + GLM 5.3, Codex)
+Current Status : M3-04 DONE, ready for M3-05.
 
 1. CURRENT BRANCH:
    feat/m3-media-knowledge-integration
 
-2. CURRENT HEAD / BASE:
-   Commit: feat(m3): integrate image albums with OCR and VLM
-   Base: ffe8aa1d7e937e91a6270a042e603e0563d402e2 (main / m2-douyin-complete-r1)
+2. CURRENT BASE:
+   Base Commit: ffe8aa1d7e937e91a6270a042e603e0563d402e2 (main / m2-douyin-complete-r1)
+   Previous Commit: 3a75d88d4466edd5141e5794de42dfbc24ab23b4 (feat(m3): integrate image albums with OCR and VLM)
+   New Deliverable: src/provenance.py, tests/test_evidence_provenance.py
 
 3. COMPONENTS:
    - src/media_adapter/ (CanonicalMediaAsset, AlbumImageArtifact, CanonicalMediaAssetAdapter)
    - src/visual/album.py (build_album_visual_evidence, album_visual_pipeline_fingerprint, render_album_visual_markdown)
    - src/visual/service.py (PaddleOCRBackend.read_detail with polygons/boxes)
    - scripts/ocr_gpu_worker.py (isolated GPU worker with per-image failure isolation)
-   - src/pipeline.py (process_canonical_album, process_canonical_asset, stop_after cutoff, resume)
+   - src/provenance.py (EvidenceItem, build_evidence_manifest, write_evidence_manifest, verify_evidence_manifest)
+   - src/pipeline.py (process_canonical_album, process_canonical_asset, stop_after cutoff, bind_evidence)
    - tests/test_media_adapter.py (16 tests)
    - tests/test_video_asr_pipeline.py (10 tests)
    - tests/test_album_visual_pipeline.py (14 tests)
+   - tests/test_evidence_provenance.py (17 tests)
    - docs/M3_HANDOFF.md, docs/M3_DECISIONS.md, docs/M3_TASKS.md
 
 4. CURRENT TASK:
-   M3-03: Image Album OCR / VLM Integration -> DONE.
-   Next Task: M3-04 Metadata & Provenance Binding.
+   M3-04: Metadata & Provenance Binding -> DONE.
+   Next Task: M3-05 Long Media Chunking.
 
-5. COMPLETED WORK:
+5. COMPLETED WORK (M3-01 ~ M3-04):
    - M3-01: CanonicalMediaAssetAdapter (manifest ingestion, formal validation, decoupled metadata DB).
    - M3-02: Video / ASR Integration (direct streaming, PRIMARY_VIDEO 16kHz mono WAV, NO_AUDIO contract, resume).
-   - M3-03: Image Album OCR / VLM Integration:
-     * Dedicated album visual pipeline in src/visual/album.py.
-     * Direct streaming from CanonicalMediaAsset into process_canonical_album.
-     * Strict sequence ordering (1..N) with 1:1 image provenance binding.
-     * Detailed polygon, bounding box, and confidence extraction via read_detail().
-     * Per-image failure isolation (single failure yields "partial", not abort).
-     * Sub-second resume (<1ms) on identical content and visual config.
-     * Real C10 formal album (7682038498466993905: 3 WebP images) verified on RTX 4090 GPU offline.
-     * 14/14 tests in tests/test_album_visual_pipeline.py passed.
-     * Full regression: 706 passed, 10 skipped.
+   - M3-03: Image Album OCR / VLM Integration (sequential OCR lines with polygons/boxes, failure isolation, resume).
+   - M3-04: Metadata & Provenance Binding:
+     * Unified evidence index: data/processed/<canonical_id>/evidence_manifest.json.
+     * Epistemic contract: verification_status = "not_checked" across all evidence items.
+     * Clean timestamp semantics: published_at (creator time) vs first_seen_at (collector observation time).
+     * Strictly NO fake collected_at.
+     * Exact 1:1 artifact binding for PRIMARY_VIDEO, ALBUM_IMAGE, and AUDIO_TRACK.
+     * Resilient fallback when metadata.db is absent (enrichment_status: "unenriched").
+     * Sub-second resume (< 2ms) on identical fingerprint.
+     * Real C10 video (7681603850364521734: 184 segments) and album (7682038498466993905: 4 items) verified.
+     * 17/17 tests in tests/test_evidence_provenance.py passed.
+     * Full regression: 723 passed, 10 skipped.
 
-6. REMAINING WORK (M3-04+):
-   - M3-04: Metadata & Provenance Binding: Traceable knowledge evidence linking extracted claims/visual points to M2 collector records and original platform items.
-   - M3-05: Dynamic chunking of long transcripts and image batches with hierarchical summary merging.
-   - M3-06: M3 End-to-End Acceptance.
+6. TARGET FOR M3-05 (Long Media Chunking):
+   - Dynamic chunking of long transcripts and image batches with hierarchical summary merging.
+   - Build upon verified evidence_manifest.json and segments from M3-04.
 
 7. EXACT NEXT COMMANDS TO RUN:
-   # Step A: Run M3 unit suites
-   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py tests/test_album_visual_pipeline.py -v
+   # Step A: Run all 4 M3 unit suites (57 tests)
+   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py tests/test_album_visual_pipeline.py tests/test_evidence_provenance.py -v
 
-   # Step B: Run full test regression
+   # Step B: Run full test regression (723 passed, 10 skipped)
    .\.venv\Scripts\python.exe -m pytest tests -q
+
+   # Step C: Run worker regression (.venv-f2, 55 passed)
+   .\.venv-f2\Scripts\python.exe -m pytest tests/test_downloader_worker.py -k "not live" -q
 
 8. KEY FILES TO READ:
    - docs/M3_HANDOFF.md (this document)
-   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-8)
+   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-9)
    - docs/M3_TASKS.md (task progression board)
-   - src/media_adapter/models.py
-   - src/media_adapter/adapter.py
-   - src/visual/album.py
-   - src/pipeline.py
-   - tests/test_album_visual_pipeline.py
+   - src/provenance.py (EvidenceItem, build_evidence_manifest, write_evidence_manifest)
+   - tests/test_evidence_provenance.py (17 test cases)
 
 9. CORE INVARIANTS (DO NOT BREAK):
    - DO NOT modify src/collector/ or src/downloader/ (M2 is frozen).
    - DO NOT make network calls or live Douyin requests.
    - DO NOT touch, mutate, or delete M2 runtime data (data/metadata.db, archive/douyin/).
    - Formal asset archive files must remain strictly read-only.
+   - Evidence is model observation, NOT truth (verification_status: "not_checked").
 ================================================================================
 ```
+
 

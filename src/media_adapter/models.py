@@ -240,3 +240,17 @@ class CanonicalMediaAsset:
         else:
             raise UnsupportedContentTypeError(f"Unsupported content type: {self.content_type}")
 
+    def bind_evidence(
+        self,
+        config: AppConfig | None = None,
+        force: bool = False,
+        processed_dir: Path | None = None,
+    ) -> Path:
+        """Binds source metadata, formal asset manifest, and derived media evidence into evidence_manifest.json.
+
+        Guarantees deterministic ordering, immutability of formal archive, and sub-second idempotency.
+        """
+        from src.provenance import write_evidence_manifest
+        return write_evidence_manifest(self, config=config, processed_dir=processed_dir, force=force)
+
+

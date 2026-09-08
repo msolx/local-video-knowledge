@@ -13,7 +13,7 @@
 | **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DONE`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
 | **M3-02** | **Video / ASR Integration** | Current Agent | **`DONE`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
 | **M3-03** | **Image Album OCR/VLM Integration** | Current Agent | **`DONE`** | M3-01 | Multi-image visual inspection pipeline |
-| **M3-04** | Metadata & Provenance Binding | TBD | **`TODO`** | M3-01, M3-02, M3-03 | Grounded provenance binding across media + collector DB |
+| **M3-04** | **Metadata & Provenance Binding** | Current Agent | **`DONE`** | M3-01, M3-02, M3-03 | Grounded evidence manifest across media + collector DB |
 | **M3-05** | Long Media Chunking | TBD | **`TODO`** | M3-02 | Hierarchical segment chunking & merge validation |
 | **M3-06** | M3 End-to-End Acceptance | TBD | **`TODO`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
 
@@ -67,8 +67,21 @@
   - Verified against real C10 formal album (`7682038498466993905`: 3 WebP images) offline on GPU.
   - 14 comprehensive unit/integration tests in `tests/test_album_visual_pipeline.py`.
 
-### M3-04: Metadata & Provenance Binding (`TODO`)
-- Traceable knowledge evidence linking extracted claims/visual points to M2 collector records and original platform items.
+### M3-04: Metadata & Provenance Binding (`DONE`)
+- **Objective**: Bind source metadata (`metadata.db` / `collection_items`), formal asset manifest (M2 `asset_manifest.json`), and derived media evidence (M3-02 ASR `transcript.json` / M3-03 OCR/VLM `visual_transcript.json`) into a unified, deterministic, traceable evidence index: `data/processed/<canonical_id>/evidence_manifest.json`.
+- **Completed Scope**:
+  - Implemented `src/provenance.py` extensions: `EvidenceItem`, `build_evidence_manifest()`, `write_evidence_manifest()`, `load_evidence_manifest()`, `verify_evidence_manifest()`.
+  - Added `CanonicalMediaAsset.bind_evidence(config, force=False)` in `src/media_adapter/models.py`.
+  - Added `--stop-after evidence` option in `src/pipeline.py` CLI parser.
+  - Epistemic invariant: Evidence Is Not Truth (`verification_status: "not_checked"` across all evidence items and manifest summary).
+  - Clear timestamp semantics: distinct `published_at` (creator time) and `first_seen_at` (collector time); strictly NO fake `collected_at`.
+  - Formal asset binding: binds `PRIMARY_VIDEO`, `ALBUM_IMAGE`, `AUDIO_TRACK` with exact filenames, SHA-256s, byte sizes, and 1-indexed sequences.
+  - Deterministic manifest fingerprint: computed via SHA-256 over identity, source metadata snapshot, artifacts, model provenance, and evidence items.
+  - Idempotent resume: sub-second turnaround (< 2ms) when inputs are unchanged; automatic invalidation and regeneration upon evidence or config change.
+  - Strict archive immutability: zero bytes modified in `archive/`. Outputs isolated in `data/processed/<canonical_id>/evidence_manifest.json`.
+  - Resilient to missing components: works gracefully when `metadata.db` is absent (`enrichment_status: "unenriched"`), for audio-less videos (`NO_AUDIO`), and for partial album OCR failures.
+  - Verified against real C10 video (`7681603850364521734`: 184 speech segments) and real C10 album (`7682038498466993905`: 4 visual items).
+  - 17 comprehensive unit/integration tests in `tests/test_evidence_provenance.py`.
 
 ### M3-05: Long Media Chunking (`TODO`)
 - Dynamic chunking of long transcripts and image batches with hierarchical summary merging.

@@ -437,7 +437,13 @@ def process_canonical_asset(
             f"Cannot run video pipeline on non-video asset ({content_type}): {getattr(canonical_asset, 'canonical_id', 'unknown')}"
         )
     media_asset = canonical_asset.to_pipeline_media_asset(config)
-    return process_asset(config, media_asset, force=force, stop_after=stop_after)
+    effective_stop = "asr" if stop_after == "evidence" else stop_after
+    result = process_asset(config, media_asset, force=force, stop_after=effective_stop)
+    if stop_after in ("evidence", "asr", None):
+        from .provenance import write_evidence_manifest
+        write_evidence_manifest(canonical_asset, config=config, processed_dir=result, force=force)
+    return result
+
 
 
 def process_canonical_album(
@@ -584,7 +590,11 @@ def process_canonical_album(
             }
 
         _stage(state, state_path, "visual", force, run_album_visual)
+        if stop_after in ("evidence", "visual", None):
+            from .provenance import write_evidence_manifest
+            write_evidence_manifest(canonical_asset, config=config, processed_dir=album_dir, force=force)
         return album_dir
+
     finally:
         lock.unlink(missing_ok=True)
 
@@ -701,6 +711,6 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", type=Path, help="One video file. Omit to scan data_root/incoming/manual.")
     parser.add_argument("--video-id", help="Run one already-normalized asset by its stable video ID.")
     parser.add_argument("--canonical-id", help="Process formal M2 asset by platform_content_id or canonical_id.")
-    parser.add_argument("--stop-after", default="all", choices=["source", "audio", "asr", "visual", "knowledge", "publish_media", "all"], help="Stage after which to stop (default: all).")
+    parser.add_argument("--stop-after", default="all", choices=["source", "audio", "asr", "visual", "evidence", "knowledge", "publish_media", "all"], help="Stage after which to stop (default: all).")
     parser.add_argument("--force", action="store_true", help="Re-run already completed stages for the selected video(s).")
     return parser

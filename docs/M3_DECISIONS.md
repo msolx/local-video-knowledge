@@ -139,3 +139,40 @@
   - *Extracting album images as fake video keyframes via synthetic video*: Unnecessary transcode overhead, lossy compression, and breaks 1:1 image file provenance binding.
   - *Hard-failing the entire album when local VLM is offline*: Breaks offline operation and degrades reliability when only OCR text extraction is needed.
 
+---
+
+## Decision 9: Media Evidence & Provenance Binding Architecture (M3-04)
+- **Context**: Up to M3-03, video ASR produced `transcript.json` and album visual processing produced `visual/visual_transcript.json`. These outputs were decoupled model artifacts lacking unified, end-to-end provenance linking them back to M2 formal archive manifests (`asset_manifest.json`) and collector records (`metadata.db`). M3-04 binds these elements into a unified, deterministic evidence index (`evidence_manifest.json`).
+- **Decision**:
+  - **Unified Evidence Contract (`evidence_manifest.json`)**:
+    - Created `src/provenance.py` implementing `EvidenceItem`, `build_evidence_manifest()`, `write_evidence_manifest()`, `load_evidence_manifest()`, and `verify_evidence_manifest()`.
+    - Outputs are isolated strictly to `data/processed/<canonical_id>/evidence_manifest.json`.
+  - **Core Epistemic Invariant: Evidence Is Not Truth**:
+    - ASR speech transcripts and OCR line polygons are model-derived observations, not verified ground truth.
+    - All evidence items and the manifest summary enforce `verification_status: "not_checked"`. Claims of factual truth are strictly forbidden at this layer.
+  - **Strict Semantic Distinction & Zero Fake Timestamps**:
+    - `published_at`: Creator's publication timestamp on the source platform (`create_time`).
+    - `first_seen_at`: First observation timestamp by the local collector sync run.
+    - Strictly NO fake or synthesized `collected_at` field in `source_metadata`.
+  - **Decoupled Metadata DB Architecture & Resilience**:
+    - Sourcing `source_metadata` from `metadata.db` is optional. If `metadata.db` is missing, corrupted, or locked, the manifest records `enrichment_status: "unenriched"` and continues without error.
+  - **Exact Artifact & Modality Binding**:
+    - **Video Speech Evidence**: Each ASR segment maps to `modality: "speech"`, bound to `PRIMARY_VIDEO`, video filename, SHA-256, temporal span (`start`, `end`, `duration`), 1-indexed `segment_order`, and model provenance (`faster_whisper`, `large-v3`, `float16`).
+    - **Album Visual Evidence**: Each OCR frame maps to `modality: "visual_text"`, bound to `ALBUM_IMAGE`, WebP filename, image SHA-256, byte size, 1-indexed `sequence_index`, confidence score, and polygon/box geometries.
+    - **Unresolved VLM References**: Missing or offline local VLM servers record `modality: "visual_description"` with status `unresolved_visual_reference` without failing.
+    - **NO_AUDIO Handling**: Audio-less videos record `speech_segments: 0`, empty items, and `status: "NO_AUDIO"` in model provenance cleanly.
+    - **Partial Album Failure**: Single-image OCR failures record the failed image status while preserving successful images.
+  - **Deterministic Fingerprinting & Sub-Second Idempotency**:
+    - `compute_manifest_fingerprint()` generates a canonical SHA-256 over canonical ID, source metadata snapshot, formal artifacts, model settings, and evidence items.
+    - If `evidence_manifest.json` exists with matching fingerprint and `force=False`, returns cached path in sub-second time (< 2ms).
+    - Modifying any evidence segment, OCR line, model parameter, or source metadata immediately invalidates the fingerprint and regenerates the manifest.
+  - **Strict Archive Immutability**:
+    - The formal archive (`archive/`) is 100% read-only. Zero files are created, modified, or deleted in `archive/`.
+  - **Zero Knowledge Extraction (Non-Goal Boundary)**:
+    - M3-04 strictly halts before knowledge extraction. No author claims, opinions, entities, summaries, or Obsidian notes are generated.
+- **Rejected Alternatives**:
+  - *Marking evidence as `verified: true`*: Falsely equates model observation with factual truth.
+  - *Synthesizing fake `collected_at` timestamps*: Corrupts provenance integrity when `first_seen_at` accurately represents collector observation time.
+  - *Writing `evidence_manifest.json` into `archive/`*: Violates M2 formal asset freeze and mixing of raw data with derived intelligence.
+
+
