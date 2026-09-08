@@ -165,6 +165,33 @@ class PaddleOCRBackend:
         value = result.json.get("res", {})
         return value.get("rec_texts", []), value.get("rec_scores", [])
 
+    def read_detail(self, frame: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        result = next(iter(self.ocr.predict(frame["path"])))
+        elapsed = time.perf_counter() - started
+        self.inference_seconds += elapsed
+        self.inference_calls += 1
+        value = result.json.get("res", {})
+        dt_polys = value.get("dt_polys", [])
+        rec_boxes = value.get("rec_boxes", [])
+
+        def _to_list(obj: Any) -> Any:
+            if hasattr(obj, "tolist"):
+                return obj.tolist()
+            if isinstance(obj, (list, tuple)):
+                return [_to_list(x) for x in obj]
+            if isinstance(obj, (int, float, str, bool)) or obj is None:
+                return obj
+            return str(obj)
+
+        return {
+            "texts": [str(t) for t in value.get("rec_texts", [])],
+            "scores": [float(s) for s in value.get("rec_scores", [])],
+            "polygons": _to_list(dt_polys),
+            "boxes": _to_list(rec_boxes),
+            "inference_seconds": round(elapsed, 4),
+        }
+
     def warmup(self, frame: dict[str, Any]) -> tuple[list[str], list[float]]:
         """Pay first-use cost on a real frame; caller reuses this result."""
         before = self.inference_seconds
@@ -190,20 +217,23 @@ def _run_gpu_worker(frames: list[dict[str, Any]], config: dict[str, Any]) -> tup
     worker_config = {key: value for key, value in config.items() if key not in {"backend", "fallback", "python_executable", "timeout_seconds"}}
     command = [str(executable), str(worker)]
     started = time.perf_counter()
-    result = subprocess.run(command, input=json.dumps({"frames": frames, "config": worker_config}, ensure_ascii=False), text=True,
+    input_bytes = json.dumps({"frames": frames, "config": worker_config}, ensure_ascii=False).encode("utf-8")
+    result = subprocess.run(command, input=input_bytes,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=int(config.get("timeout_seconds", 600)))
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
     if result.returncode:
-        raise RuntimeError(f"GPU OCR worker failed ({result.returncode}): {result.stderr[-2000:]}")
+        raise RuntimeError(f"GPU OCR worker failed ({result.returncode}): {stderr[-2000:]}")
     try:
-        payload = json.loads(result.stdout)
+        payload = json.loads(stdout)
     except json.JSONDecodeError as error:
-        raise RuntimeError(f"GPU OCR worker returned invalid JSON: {result.stdout[-1000:]}") from error
+        raise RuntimeError(f"GPU OCR worker returned invalid JSON: {stdout[-1000:]}") from error
     if payload.get("status") != "completed":
         raise RuntimeError(f"GPU OCR worker did not complete: {payload}")
     reads = {frame_id: (value.get("texts", []), value.get("scores", [])) for frame_id, value in payload.get("reads", {}).items()}
     if set(reads) != {frame["frame_id"] for frame in frames}:
         raise RuntimeError("GPU OCR worker returned an incomplete frame result set.")
-    timing = {**payload.get("timing", {}), "worker_total_seconds": round(time.perf_counter() - started, 3), "worker_stderr": result.stderr[-1000:]}
+    timing = {**payload.get("timing", {}), "worker_total_seconds": round(time.perf_counter() - started, 3), "worker_stderr": stderr[-1000:]}
     return reads, timing
 
 

@@ -3,8 +3,8 @@
 > **Authoritative Handoff Document for Milestone M3**  
 > **Repository Root**: `G:\local_pc_project\personal-knowledge-pipeline`  
 > **Milestone Status**: `STARTED / IN_PROGRESS`  
-> **Current Focus**: Task M3-02 Video / ASR Integration (`DONE`)  
-> **Next Focus**: Task M3-03 Image Album OCR/VLM Integration (`TODO`)  
+> **Current Focus**: Task M3-03 Image Album OCR / VLM Integration (`DONE`)  
+> **Next Focus**: Task M3-04 Metadata & Provenance Binding (`TODO`)  
 > **Handoff Target**: Cross-Agent / Cross-Harness Compatible (Gemini 3.8 Flash, OpenCode + GLM 5.3, Codex)
 
 ---
@@ -18,8 +18,9 @@
 | **Git Branch** | `feat/m3-media-knowledge-integration` |
 | **Base Commit** | `ffe8aa1d7e937e91a6270a042e603e0563d402e2` (M2 recovery anchor `m2-douyin-complete-r1`) |
 | **M2 Subsystem State**| **FROZEN / UNMODIFIED** (`src/collector/`, `src/downloader/` untouched) |
-| **Current Task** | **M3-02: Video / ASR Integration** (`DONE`) |
-| **Active Test Baseline** | **692 passed, 10 skipped** (Main `.venv`: 666 M2 baseline + 16 M3-01 tests + 10 M3-02 tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
+| **Current Task** | **M3-03: Image Album OCR / VLM Integration** (`DONE`) |
+| **Active Test Baseline** | **706 passed, 10 skipped** (Main `.venv`: 666 M2 baseline + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
+
 
 ---
 
@@ -83,7 +84,40 @@
 - **[`main.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/main.py)**:
   - Added CLI routing for `--canonical-id` and `--stop-after`.
 
+### 2.3 Package: `src/visual/album.py` and Image Album OCR/VLM Integration (M3-03)
+- **[`src/visual/album.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/visual/album.py)**:
+  - `build_album_visual_evidence(canonical_asset, visual_dir, config, force=False)`:
+    - Sorts album images strictly by 1-indexed `sequence_index` (1..N).
+    - Checks cache hit via `album_visual_pipeline_fingerprint()`; resumes in sub-second time (<1ms) if unchanged.
+    - Dispatches OCR across all ordered images using `_run_album_ocr()`.
+    - Extracts detailed per-line OCR text, confidence scores, 4-point polygons, and bounding boxes.
+    - Isolates single-image failures: wrapped in per-image try/except; if 1/N fails, remaining N-1 are captured and overall status is `"partial"`.
+    - Evaluates OCR text against `minimum_confidence` (default 0.65); flags `insufficient_ocr` when text is missing or below threshold.
+    - Optional VLM: attempts visual description via `LMStudioVLMBackend` or `OpenAICompatibleVLMBackend`; if server is offline or disabled, logs `unresolved_visual_reference` gracefully without failing.
+    - Writes standard artifacts into `data/processed/<canonical_id>/visual/`:
+      * `visual_transcript.json` (schema `"visual-evidence-v1"`)
+      * `ocr.json` (detailed per-line polygons, boxes, and confidence)
+      * `requests.json` (VLM requests and statuses)
+      * `visual.md` (human-readable markdown visual summary)
+  - `album_visual_pipeline_fingerprint(album_images, config)`: Deterministic SHA-256 over image sequence indices, image SHA-256s, and visual OCR/VLM settings.
+  - `render_album_visual_markdown(evidence, summary)`: Formats visual summary report.
+- **[`src/visual/service.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/visual/service.py)**:
+  - Enhanced `PaddleOCRBackend` with `read_detail(frame)` returning `texts`, `scores`, `polygons`, `boxes`, `inference_seconds`.
+  - Fixed Windows subprocess pipe decoding: changed `text=True` to byte I/O with `.decode("utf-8", errors="replace")` in `_run_gpu_worker()`.
+- **[`scripts/ocr_gpu_worker.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/scripts/ocr_gpu_worker.py)**:
+  - Calls `backend.read_detail(frame)` and wraps each frame in try/except for per-image failure isolation.
+- **[`src/visual/vlm.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/visual/vlm.py)**:
+  - Fixed Windows subprocess pipe decoding in `LMStudioVLMBackend` to eliminate GBK decode crashes.
+- **[`src/pipeline.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/pipeline.py)**:
+  - Added `process_canonical_album(config, canonical_asset, force=False, stop_after=None) -> Path`.
+  - Updated `run()` to route `canonical_asset.is_album` to `process_canonical_album`.
+  - Automated visual cache invalidation: re-runs visual stage if visual config or album content fingerprint changes.
+- **[`src/media_adapter/models.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/media_adapter/models.py)**:
+  - Added `@property def size_bytes(self) -> int: return self.byte_size` to `AlbumImageArtifact`.
+  - Added `CanonicalMediaAsset.process_visual(config, force=False, stop_after=None) -> Path`.
+
 ---
+
 
 ## 3. Test Suite & Regression Reconciliation
 
@@ -121,15 +155,35 @@
   9. `test_09_pipeline_stop_after_cutoff`: Confirms `stop_after="asr"` terminates pipeline cleanly before `visual` or `knowledge` stages.
   10. `test_10_real_c10_video_offline_asr_smoke`: Full offline integration test verifying real C10 video (`7681603850364521734`) processes through adapter and pipeline to valid transcripts.
 
-### 3.3 Regression Baseline Tracking (672/4 -> 682/10 -> 692/10)
+### 3.3 Image Album Visual / OCR Test Suite (`tests/test_album_visual_pipeline.py`)
+- **14/14 tests passing** in 0.69s.
+- Covers:
+  1. `test_01_canonical_album_enters_visual_pipeline`: Album enters visual pipeline directly without manual drops; verifies artifact directory structure.
+  2. `test_02_sequence_order_preserved`: Verifies images are processed in strict sequence order (1..N) even if shuffled in manifest.
+  3. `test_03_archive_immutable`: Verifies `archive/` remains 100% untouched before and after processing.
+  4. `test_04_ocr_evidence_tied_to_exact_image`: Verifies provenance binding (`canonical_id`, `platform`, `sequence_index`, `source_image_file`, `source_image_sha256`) and per-line polygons/boxes/confidence.
+  5. `test_05_ocr_empty_text_behavior`: Verifies images with empty or low-confidence text produce `insufficient_ocr` without crashing.
+  6. `test_06_ocr_backend_unavailable_behavior`: Verifies missing OCR binary/env raises clear, informative error.
+  7. `test_07_single_image_failure_partial_behavior`: Verifies failure isolation (1/N failing produces overall `"partial"` status while preserving other images).
+  8. `test_08_optional_vlm_disabled`: Verifies VLM disabled mode completes OCR cleanly.
+  9. `test_09_optional_vlm_success_mock`: Verifies successful VLM response produces `"resolved"` visual reference.
+  10. `test_10_repeated_processing_and_cache`: Verifies idempotent sub-second cache hit on repeated execution (<1ms).
+  11. `test_11_image_hash_or_config_change_invalidates_cache`: Verifies modifying OCR config invalidates cache and triggers re-run.
+  12. `test_12_video_canonical_asset_rejected`: Verifies video asset is rejected by album visual pipeline with `UnsupportedContentTypeError`.
+  13. `test_13_optional_bgm_does_not_affect_ocr`: Verifies optional BGM is preserved in metadata/media while audio/ASR stages are skipped.
+  14. `test_14_real_c10_album_offline_smoke`: Integration smoke test with real C10 formal album (`7682038498466993905`: 3 WebP images) on GPU.
+
+### 3.4 Regression Baseline Tracking (672/4 -> 682/10 -> 692/10 -> 706/10)
 - **M2 Checkpoint Baseline**: 672 passed, 4 skipped (Total collected: 676)
 - **M3-01 Main Suite**: 682 passed, 10 skipped (Total collected: 692 = 676 M2 tests + 16 M3-01 tests)
-- **Current M3-02 Main Suite**: **692 passed, 10 skipped** (Total collected: 702 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests)
+- **M3-02 Main Suite**: 692 passed, 10 skipped (Total collected: 702 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests)
+- **Current M3-03 Main Suite**: **706 passed, 10 skipped** (Total collected: 716 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests)
   - Old tests executing: 666 passed, 10 skipped
   - New M3-01 tests: 16 passed
   - New M3-02 tests: 10 passed
-  - Total: 666 + 16 + 10 = 692 passed in 76.08s.
-- **Worker Suite (`.venv-f2`)**: 55 passed, 10 deselected in 3.51s.
+  - New M3-03 tests: 14 passed
+  - Total: 666 + 16 + 10 + 14 = 706 passed in 74.65s.
+- **Worker Suite (`.venv-f2`)**: 55 passed, 10 deselected in 5.33s.
 - **The 4 Pre-Existing M2 Skips (Worker Environment Isolation)**:
   1. `tests/test_f2_backend.py:885`: `Requires F2 installed in worker environment (.venv-f2)`
   2. `tests/test_f2_backend.py:988`: `Requires F2 installed in worker environment (.venv-f2)`
@@ -154,10 +208,10 @@
 
 ---
 
-## 4. Known Limitations & Non-Goals in M3-02
+## 4. Known Limitations & Non-Goals in M3-03
 
-1. **Task Scope Boundary**: M3-02 strictly addressed video audio extraction and ASR transcription. Visual frame OCR/VLM and knowledge summarization were cleanly stopped via `stop_after="asr"`.
-2. **Image Album Processing**: Image albums are intentionally rejected by `process_canonical_asset()` during M3-02. M3-03 will implement multi-image OCR and VLM processing for `asset.album_images`.
+1. **Task Scope Boundary**: M3-03 strictly addressed image album visual OCR inspection and optional VLM reference generation. Full knowledge extraction/synthesis (`knowledge.json`, `knowledge.md`) is deferred to M3-04.
+2. **Offline VLM Resilience**: Local LM Studio VLM server is offline by default. Visual OCR runs independently and succeeds 100% without VLM; missing VLM generates `unresolved_visual_reference` gracefully.
 3. **No Network**: Zero network requests or live Douyin API calls.
 
 ---
@@ -169,60 +223,65 @@
                     NEXT_AGENT_START_HERE (CROSS-AGENT PROTOCOL)
 ================================================================================
 Target Audience: Any LLM / Agent (Gemini, OpenCode + GLM 5.3, Codex)
-Current Status : M3-02 DONE, ready for M3-03.
+Current Status : M3-03 DONE, ready for M3-04.
 
 1. CURRENT BRANCH:
    feat/m3-media-knowledge-integration
 
 2. CURRENT HEAD / BASE:
-   Commit: feat(m3): integrate formal video assets with ASR
+   Commit: feat(m3): integrate image albums with OCR and VLM
    Base: ffe8aa1d7e937e91a6270a042e603e0563d402e2 (main / m2-douyin-complete-r1)
 
 3. COMPONENTS:
    - src/media_adapter/ (CanonicalMediaAsset, AlbumImageArtifact, CanonicalMediaAssetAdapter)
-   - src/pipeline.py (process_canonical_asset, stop_after stage cutoff, NO_AUDIO contract, resume)
+   - src/visual/album.py (build_album_visual_evidence, album_visual_pipeline_fingerprint, render_album_visual_markdown)
+   - src/visual/service.py (PaddleOCRBackend.read_detail with polygons/boxes)
+   - scripts/ocr_gpu_worker.py (isolated GPU worker with per-image failure isolation)
+   - src/pipeline.py (process_canonical_album, process_canonical_asset, stop_after cutoff, resume)
    - tests/test_media_adapter.py (16 tests)
    - tests/test_video_asr_pipeline.py (10 tests)
+   - tests/test_album_visual_pipeline.py (14 tests)
    - docs/M3_HANDOFF.md, docs/M3_DECISIONS.md, docs/M3_TASKS.md
 
 4. CURRENT TASK:
-   M3-02: Video / ASR Integration -> DONE.
-   Next Task: M3-03 Image Album OCR/VLM Integration.
+   M3-03: Image Album OCR / VLM Integration -> DONE.
+   Next Task: M3-04 Metadata & Provenance Binding.
 
 5. COMPLETED WORK:
    - M3-01: CanonicalMediaAssetAdapter (manifest ingestion, formal validation, decoupled metadata DB).
-   - M3-02: Video / ASR Integration:
-     * Added stop_after cutoff support in pipeline.py ("source", "audio", "asr").
-     * Direct streaming from CanonicalMediaAsset into pipeline without incoming/manual copying.
-     * Strict archive immutability (archive/ is 100% read-only).
-     * Audio extraction strictly from PRIMARY_VIDEO (16kHz mono WAV).
-     * Explicit NO_AUDIO status handling without hallucinating transcripts.
-     * Idempotent resume: sub-second turnaround (0.03s) on cached transcripts.
-     * Real C10 4K HEVC video verified on RTX 4090 GPU offline (184 segments, 370.58s).
-     * 10/10 tests in tests/test_video_asr_pipeline.py passed.
-     * Full regression: 692 passed, 10 skipped.
+   - M3-02: Video / ASR Integration (direct streaming, PRIMARY_VIDEO 16kHz mono WAV, NO_AUDIO contract, resume).
+   - M3-03: Image Album OCR / VLM Integration:
+     * Dedicated album visual pipeline in src/visual/album.py.
+     * Direct streaming from CanonicalMediaAsset into process_canonical_album.
+     * Strict sequence ordering (1..N) with 1:1 image provenance binding.
+     * Detailed polygon, bounding box, and confidence extraction via read_detail().
+     * Per-image failure isolation (single failure yields "partial", not abort).
+     * Sub-second resume (<1ms) on identical content and visual config.
+     * Real C10 formal album (7682038498466993905: 3 WebP images) verified on RTX 4090 GPU offline.
+     * 14/14 tests in tests/test_album_visual_pipeline.py passed.
+     * Full regression: 706 passed, 10 skipped.
 
-6. REMAINING WORK (M3-03+):
-   - M3-03: Implement image album visual OCR/VLM inspection for album_images (PP-OCRv6 + VLM).
-   - M3-04: Bind grounded provenance and collector metadata to final knowledge evidence.
+6. REMAINING WORK (M3-04+):
+   - M3-04: Metadata & Provenance Binding: Traceable knowledge evidence linking extracted claims/visual points to M2 collector records and original platform items.
    - M3-05: Dynamic chunking of long transcripts and image batches with hierarchical summary merging.
    - M3-06: M3 End-to-End Acceptance.
 
 7. EXACT NEXT COMMANDS TO RUN:
    # Step A: Run M3 unit suites
-   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py -v
+   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py tests/test_album_visual_pipeline.py -v
 
    # Step B: Run full test regression
    .\.venv\Scripts\python.exe -m pytest tests -q
 
 8. KEY FILES TO READ:
    - docs/M3_HANDOFF.md (this document)
-   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-7)
+   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-8)
    - docs/M3_TASKS.md (task progression board)
    - src/media_adapter/models.py
    - src/media_adapter/adapter.py
+   - src/visual/album.py
    - src/pipeline.py
-   - tests/test_video_asr_pipeline.py
+   - tests/test_album_visual_pipeline.py
 
 9. CORE INVARIANTS (DO NOT BREAK):
    - DO NOT modify src/collector/ or src/downloader/ (M2 is frozen).

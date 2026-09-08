@@ -12,8 +12,8 @@
 | :--- | :--- | :--- | :---: | :--- | :--- |
 | **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DONE`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
 | **M3-02** | **Video / ASR Integration** | Current Agent | **`DONE`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
-| **M3-03** | Image Album OCR/VLM Integration | TBD | **`TODO`** | M3-01 | Multi-image visual inspection pipeline |
-| **M3-04** | Metadata & Provenance Binding | TBD | **`TODO`** | M3-01, M3-02 | Grounded provenance binding across media + collector DB |
+| **M3-03** | **Image Album OCR/VLM Integration** | Current Agent | **`DONE`** | M3-01 | Multi-image visual inspection pipeline |
+| **M3-04** | Metadata & Provenance Binding | TBD | **`TODO`** | M3-01, M3-02, M3-03 | Grounded provenance binding across media + collector DB |
 | **M3-05** | Long Media Chunking | TBD | **`TODO`** | M3-02 | Hierarchical segment chunking & merge validation |
 | **M3-06** | M3 End-to-End Acceptance | TBD | **`TODO`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
 
@@ -52,8 +52,20 @@
   - Real C10 4K HEVC video verified offline on GPU (RTX 4090 + faster-whisper large-v3, 184 segments, 370.58s duration, 0 mutations to archive).
   - 10 unit tests in `tests/test_video_asr_pipeline.py` covering all 10 requirements.
 
-### M3-03: Image Album OCR/VLM Integration (`TODO`)
-- Sequential frame/image inspection for image albums using PP-OCRv6 and on-demand VLM fallback.
+### M3-03: Image Album OCR/VLM Integration (`DONE`)
+- **Objective**: Integrate formal M2 image album assets into visual understanding pipeline (PaddleOCR PP-OCRv6 + optional VLM), guaranteeing strict sequence order, archive immutability, detailed polygon/bounding box extraction, failure isolation, and idempotent sub-second resume.
+- **Completed Scope**:
+  - Implemented `src/visual/album.py`: `build_album_visual_evidence()`, `album_visual_pipeline_fingerprint()`, `_run_album_ocr()`, `render_album_visual_markdown()`.
+  - Added `process_canonical_album(config, canonical_asset, force=False, stop_after=None)` in `src/pipeline.py` and `CanonicalMediaAsset.process_visual(config, force=False, stop_after=None)` in `src/media_adapter/models.py`.
+  - Enhanced `PaddleOCRBackend` in `src/visual/service.py` and `scripts/ocr_gpu_worker.py` with `read_detail(frame)` extracting text, confidence, polygon, and bounding boxes.
+  - Fixed Windows subprocess pipe encoding: changed `text=True` to raw byte stream with `.decode("utf-8", errors="replace")` in `src/visual/service.py` and `src/visual/vlm.py`.
+  - Per-image failure isolation: wrapped individual image OCR in try/except; single image failures yield `"partial"` album status rather than fatal crash.
+  - Strict 1-indexed sequential image ordering (`sequence_index: 1..N`) with per-image provenance binding.
+  - Archive immutability: formal assets in `archive/` remain 100% untouched. Outputs isolated in `data/processed/<canonical_id>/visual/` (`visual_transcript.json`, `ocr.json`, `requests.json`, `visual.md`).
+  - Optional VLM: gracefully falls back when VLM backend is disabled or local server is offline; logs `unresolved_visual_reference` without failing.
+  - Idempotency: verified sub-second resume (< 1ms) when image hashes and visual config are unchanged; invalidates cache upon config/image modification.
+  - Verified against real C10 formal album (`7682038498466993905`: 3 WebP images) offline on GPU.
+  - 14 comprehensive unit/integration tests in `tests/test_album_visual_pipeline.py`.
 
 ### M3-04: Metadata & Provenance Binding (`TODO`)
 - Traceable knowledge evidence linking extracted claims/visual points to M2 collector records and original platform items.
@@ -63,3 +75,4 @@
 
 ### M3-06: M3 End-to-End Acceptance (`TODO`)
 - Final closure audit for M3: formal local assets -> evidence generation.
+

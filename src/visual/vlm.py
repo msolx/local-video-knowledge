@@ -59,19 +59,21 @@ class LMStudioVLMBackend:
         command = [self.cli, "load", settings_model_key(self.settings), "--gpu", self.settings.get("gpu", "max"),
                    "--context-length", str(self.settings.get("context_length", 8192)), "--parallel", "1",
                    "--ttl", str(self.settings.get("ttl_seconds", 1800)), "--identifier", self.identifier, "-y"]
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
         if result.returncode:
-            detail = result.stderr + result.stdout
+            detail = stderr + stdout
             # A previous independent validation may have left precisely this
             # identifier loaded.  Treat it as owned for this task so its final
             # unload is still guaranteed.
             if "identifier" not in detail or "already exists" not in detail:
-                raise RuntimeError(f"LM Studio VLM load failed: {result.stderr[-1500:] or result.stdout[-1500:]}")
+                raise RuntimeError(f"LM Studio VLM load failed: {stderr[-1500:] or stdout[-1500:]}")
         self.loaded_here = True
 
     def unload(self) -> dict[str, Any]:
         if self.loaded_here:
-            subprocess.run([self.cli, "unload", self.identifier], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+            subprocess.run([self.cli, "unload", self.identifier], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
             self.loaded_here = False
         return {"nvidia_smi_after_unload": gpu_memory(self.settings.get("nvidia_smi", "nvidia-smi"))}
 
@@ -145,5 +147,7 @@ def settings_model_key(settings: dict[str, Any]) -> str:
 
 
 def gpu_memory(nvidia_smi: str) -> str:
-    result = subprocess.run([nvidia_smi, "--query-gpu=memory.used,memory.total", "--format=csv,noheader"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
-    return result.stdout.strip() if result.returncode == 0 else "unavailable"
+    result = subprocess.run([nvidia_smi, "--query-gpu=memory.used,memory.total", "--format=csv,noheader"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    return stdout.strip() if result.returncode == 0 else "unavailable"
+

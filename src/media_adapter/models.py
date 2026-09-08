@@ -79,6 +79,11 @@ class AlbumImageArtifact:
     content_type: str = "image"
     media_summary: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def size_bytes(self) -> int:
+        return self.byte_size
+
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "sequence_index": self.sequence_index,
@@ -219,3 +224,19 @@ class CanonicalMediaAsset:
         """
         from src.pipeline import process_canonical_asset
         return process_canonical_asset(config, self, force=force, stop_after="asr")
+
+    def process_visual(self, config: AppConfig, force: bool = False, stop_after: str | None = None) -> Path:
+        """Processes this canonical asset through the visual & OCR pipeline.
+
+        For image albums, extracts ordered OCR lines with full provenance and runs optional VLM.
+        For videos, invokes video visual evidence pipeline.
+        """
+        if self.is_album:
+            from src.pipeline import process_canonical_album
+            return process_canonical_album(config, self, force=force, stop_after=stop_after)
+        elif self.is_video:
+            from src.pipeline import process_canonical_asset
+            return process_canonical_asset(config, self, force=force, stop_after=stop_after)
+        else:
+            raise UnsupportedContentTypeError(f"Unsupported content type: {self.content_type}")
+

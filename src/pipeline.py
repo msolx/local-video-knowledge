@@ -440,6 +440,155 @@ def process_canonical_asset(
     return process_asset(config, media_asset, force=force, stop_after=stop_after)
 
 
+def process_canonical_album(
+    config: AppConfig,
+    canonical_asset: Any,
+    force: bool = False,
+    stop_after: str | None = None,
+) -> Path:
+    """Process a verified M2 formal image album asset directly through the visual / OCR pipeline.
+
+    Bypasses legacy manual incoming file copies, guarantees 100% formal archive immutability,
+    and isolates all derivative artifacts in data/processed/<canonical_id>/.
+    """
+    from .media_adapter import UnsupportedContentTypeError
+    from .visual.album import album_visual_pipeline_fingerprint, build_album_visual_evidence
+
+    if not getattr(canonical_asset, "is_album", False) or not getattr(canonical_asset, "album_images", None):
+        content_type = getattr(getattr(canonical_asset, "content_type", None), "value", str(getattr(canonical_asset, "content_type", "unknown")))
+        raise UnsupportedContentTypeError(
+            f"Cannot run album visual pipeline on non-album asset ({content_type}): {getattr(canonical_asset, 'canonical_id', 'unknown')}"
+        )
+
+    canonical_id = canonical_asset.canonical_id
+    album_dir = config.data_root / "processed" / canonical_id
+    album_dir.mkdir(parents=True, exist_ok=True)
+    visual_dir = album_dir / "visual"
+    visual_dir.mkdir(parents=True, exist_ok=True)
+
+    lock = _acquire_lock(album_dir)
+    try:
+        state_path = album_dir / "processing.json"
+        metadata_path = album_dir / "metadata.json"
+        media_path = album_dir / "media.json"
+
+        # Deterministic content hash of ordered album images
+        sorted_images = sorted(canonical_asset.album_images, key=lambda x: x.sequence_index)
+        content_hash = hashlib.sha256(
+            "".join(f"{img.sequence_index}:{img.sha256}" for img in sorted_images).encode("utf-8")
+        ).hexdigest()
+
+        album_stages = {
+            "source": {"status": "pending"},
+            "audio": {"status": "skipped", "reason": "image_album"},
+            "asr": {"status": "skipped", "reason": "image_album"},
+            "visual": {"status": "pending"},
+            "knowledge": {"status": "pending"},
+            "publish_media": {"status": "pending"},
+        }
+        state = load_json(state_path) or {
+            "video_id": canonical_id,
+            "canonical_id": canonical_id,
+            "content_type": "image_album",
+            "content_hash": content_hash,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+            "status": "NEW",
+            "config_fingerprint": config.fingerprint,
+            "original_input_path": str(sorted_images[0].path) if sorted_images else "",
+            "stages": album_stages,
+            "error": None,
+        }
+
+        # Stage 1: source metadata archiving
+        def archive_album_source() -> dict[str, Any]:
+            sm = canonical_asset.source_metadata or {}
+            sp = canonical_asset.source_provenance or {}
+            author = sm.get("author")
+            author_name = author.get("display_name") if isinstance(author, dict) else (author if isinstance(author, str) else None)
+            author_id = author.get("platform_author_id") if isinstance(author, dict) else None
+            metadata = {
+                "canonical_id": canonical_id,
+                "platform": canonical_asset.platform,
+                "platform_content_id": canonical_asset.platform_content_id,
+                "source_type": "canonical_formal_asset",
+                "content_type": "image_album",
+                "title": sm.get("title") or canonical_asset.platform_content_id,
+                "author_name": author_name,
+                "author_id": author_id,
+                "published_at": sm.get("published_at"),
+                "collected_at": canonical_asset.archived_at,
+                "source_url": sm.get("source_url") or f"https://www.douyin.com/video/{canonical_asset.platform_content_id}",
+                "source_provenance": sp,
+                "source_metadata": sm,
+                "audio_path": str(canonical_asset.audio_path) if canonical_asset.audio_path else None,
+                "audio_sha256": canonical_asset.audio_sha256,
+            }
+            atomic_write_json(metadata_path, metadata)
+
+            media = {
+                "canonical_id": canonical_id,
+                "content_type": "image_album",
+                "image_count": len(sorted_images),
+                "images": [
+                    {
+                        "sequence_index": img.sequence_index,
+                        "file_name": img.file_name,
+                        "sha256": img.sha256,
+                        "size_bytes": img.size_bytes,
+                        "path": str(img.path),
+                    }
+                    for img in sorted_images
+                ],
+                "audio_track": {
+                    "path": str(canonical_asset.audio_path) if canonical_asset.audio_path else None,
+                    "sha256": canonical_asset.audio_sha256,
+                } if canonical_asset.audio_path else None,
+            }
+            atomic_write_json(media_path, media)
+            return {"artifacts": [str(metadata_path), str(media_path)]}
+
+        _stage(state, state_path, "source", force, archive_album_source)
+        if stop_after == "source":
+            return album_dir
+
+        # Stage 2: visual OCR and optional VLM
+        visual_config = config.raw.get("visual_evidence", {})
+        visual_transcript_path = visual_dir / "visual_transcript.json"
+        desired_album_fingerprint = album_visual_pipeline_fingerprint(sorted_images, visual_config)
+        current_visual = load_json(visual_transcript_path, {})
+        if (
+            state["stages"].get("visual", {}).get("status") == "completed"
+            and current_visual.get("pipeline_fingerprint") != desired_album_fingerprint
+        ):
+            logging.info("Album visual configuration or content changed; re-running visual stage.")
+            state["stages"]["visual"] = {"status": "pending", "reason": "visual_fingerprint_changed"}
+            state["stages"]["knowledge"] = {"status": "pending", "reason": "upstream_visual_configuration_changed"}
+            atomic_write_json(state_path, state)
+
+        def run_album_visual() -> dict[str, Any]:
+            doc = build_album_visual_evidence(canonical_asset, visual_dir, visual_config, force=force)
+            return {
+                "artifacts": [
+                    str(visual_dir / "visual_transcript.json"),
+                    str(visual_dir / "ocr.json"),
+                    str(visual_dir / "requests.json"),
+                    str(visual_dir / "visual.md"),
+                ],
+                "image_count": doc.get("image_count", len(sorted_images)),
+                "completed_count": doc.get("ocr_summary", {}).get("completed", 0),
+                "insufficient_count": doc.get("ocr_summary", {}).get("insufficient_or_empty", 0),
+                "failed_count": doc.get("ocr_summary", {}).get("failed", 0),
+                "overall_status": doc.get("ocr_summary", {}).get("overall_status", "completed"),
+                "pipeline_fingerprint": doc.get("pipeline_fingerprint"),
+            }
+
+        _stage(state, state_path, "visual", force, run_album_visual)
+        return album_dir
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def discover_inputs(config: AppConfig) -> list[Path]:
     incoming = config.data_root / "incoming" / "manual"
     incoming.mkdir(parents=True, exist_ok=True)
@@ -475,7 +624,10 @@ def run(
         canonical_asset = adapter.load_from_content_id(cid, platform="douyin")
         effective_stop = None if stop_after in (None, "all") else stop_after
         try:
-            result = process_canonical_asset(config, canonical_asset, force=force, stop_after=effective_stop)
+            if getattr(canonical_asset, "is_album", False):
+                result = process_canonical_album(config, canonical_asset, force=force, stop_after=effective_stop)
+            else:
+                result = process_canonical_asset(config, canonical_asset, force=force, stop_after=effective_stop)
             logging.info("Completed canonical asset: %s", result)
             return 0
         except Exception:

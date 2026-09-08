@@ -105,3 +105,37 @@
   - *Symlinking or copying formal video into `data/incoming/`*: Violates storage efficiency and creates orphan files.
   - *Writing transcripts or audio directly into `archive/`*: Violates M2 formal archive immutability and separation of raw assets from processed intelligence.
   - *Running visual OCR/VLM or knowledge summarization during M3-02*: Violates task staging boundaries (M3-03 and M3-04 handle visual inspection and knowledge synthesis).
+
+---
+
+## Decision 8: Image Album OCR / VLM Integration Architecture (M3-03)
+- **Context**: Milestone M2 stores formal image album assets in `archive/douyin/<content_id>/` with ordered WebP images (`<content_id>_img_xxx.webp`), `asset_manifest.json`, and optional BGM audio (`<content_id>_bgm.mp3`). The existing M1 visual pipeline (`src/visual/service.py`) was designed for video keyframe extraction and OCR/VLM. M3-03 integrates formal image album assets directly into visual understanding without copying files, keeping archive files strictly read-only, preserving 1-indexed sequential image ordering, capturing detailed OCR bounding boxes and confidence scores, providing per-image failure isolation, and supporting optional VLM enrichment.
+- **Decision**:
+  - **Dedicated Album Visual Processing Pipeline**:
+    - Created `src/visual/album.py` with `build_album_visual_evidence()`, `album_visual_pipeline_fingerprint()`, and `render_album_visual_markdown()`.
+    - Added `process_canonical_album(config, canonical_asset, force=False, stop_after=None)` in `src/pipeline.py` and `CanonicalMediaAsset.process_visual(config, force=False, stop_after=None)` in `src/media_adapter/models.py`.
+    - `src/pipeline.py::run()` routes album canonical assets directly to `process_canonical_album`.
+  - **Strict Sequence Order & Provenance Invariant**:
+    - Album images are sorted deterministically by `sequence_index` (1..N). Even if the manifest or filesystem order is scrambled, the pipeline processes image 1, 2, ... N in strictly increasing sequence order.
+    - Output items in `visual_transcript.json` and `ocr.json` strictly record: `canonical_id`, `platform`, `platform_content_id`, `sequence_index`, `source_image_file`, `source_image_sha256`, and per-line `polygon`, `box`, `confidence`.
+  - **Archive Immutability**:
+    - All processing outputs are written exclusively to `data/processed/<canonical_id>/` (`processing.json`, `metadata.json`, `media.json`, and under `visual/`: `visual_transcript.json`, `ocr.json`, `requests.json`, `visual.md`).
+    - The formal archive (`archive/douyin/<content_id>/`) is 100% read-only; no files are modified, created, or deleted.
+  - **Detailed OCR Extraction & Windows Pipe Fix**:
+    - Reused existing PaddleOCR / PP-OCRv6 backend in `.venv-paddle-gpu`.
+    - Enhanced `PaddleOCRBackend` in `src/visual/service.py` and `scripts/ocr_gpu_worker.py` with `read_detail(frame)` returning `texts`, `scores`, `polygons` (`dt_polys`), `boxes` (`rec_boxes`), and `inference_seconds`.
+    - Fixed Windows pipe decoding: changed subprocess pipe I/O from `text=True` to raw byte stream with `.decode("utf-8", errors="replace")` in `src/visual/service.py` and `src/visual/vlm.py` to prevent GBK decoding crashes on Chinese Windows.
+  - **Per-Image Failure Isolation**:
+    - Each image inference is isolated in a `try...except` block in `ocr_gpu_worker.py`. If 1 out of N images fails OCR, the remaining N-1 images succeed and are recorded. The overall status is recorded as `"partial"` rather than aborting the entire album.
+  - **Optional VLM Boundary**:
+    - VLM is an optional visual enrichment layer (`LMStudioVLMBackend` or `OpenAICompatibleVLMBackend`). When `vlm.backend = "disabled"` or the local VLM server is offline/unreachable, OCR completes independently and the pipeline records `unresolved_visual_reference` without failing or blocking.
+  - **Idempotency and Cache Hit**:
+    - `album_visual_pipeline_fingerprint(sorted_images, visual_config)` computes a deterministic SHA-256 over image sequence indices, image SHA-256s, and visual OCR/VLM configurations.
+    - If `visual_transcript.json` already exists with a matching fingerprint and `force=False`, processing completes in sub-second time without re-running GPU inference.
+    - Modifying image content or OCR configuration invalidates the cache and triggers a re-run.
+  - **Optional BGM Independence**:
+    - If an album contains an optional audio track (`audio_path`), its metadata is cataloged in `metadata.json` and `media.json`, but `audio` and `asr` stages are marked as `"skipped"` (`reason: "image_album"`). BGM presence does not interfere with OCR or visual processing.
+- **Rejected Alternatives**:
+  - *Extracting album images as fake video keyframes via synthetic video*: Unnecessary transcode overhead, lossy compression, and breaks 1:1 image file provenance binding.
+  - *Hard-failing the entire album when local VLM is offline*: Breaks offline operation and degrades reliability when only OCR text extraction is needed.
+
