@@ -18,8 +18,8 @@
 | **Git Branch** | `feat/m3-media-knowledge-integration` |
 | **Base Commit** | `ffe8aa1d7e937e91a6270a042e603e0563d402e2` (M2 recovery anchor `m2-douyin-complete-r1`) |
 | **M2 Subsystem State**| **FROZEN / UNMODIFIED** (`src/collector/`, `src/downloader/` untouched) |
-| **Current Task** | **M3-01: CanonicalMediaAssetAdapter** (`COMPLETED / READY TO COMMIT`) |
-| **Active Test Baseline** | **681 passed, 10 skipped** (Main `.venv`: 666 baseline + 15 M3 adapter tests) |
+| **Current Task** | **M3-01: CanonicalMediaAssetAdapter** (`DONE / FULLY RECONCILED`) |
+| **Active Test Baseline** | **682 passed, 10 skipped** (Main `.venv`: 666 baseline + 16 M3 adapter tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
 
 ---
 
@@ -43,19 +43,65 @@
   - Performs strict file existence and SHA-256 integrity validation.
   - Sorts image album sequences strictly by 1-indexed `sequence_index`.
   - Discovers optional standalone BGM audio tracks without assuming BGM exists.
-  - Queries `data/metadata.db` (`collection_items.canonical_json`) in read-only mode to bind collector metadata (title, author, tags, etc.) when available.
+  - **Decoupled Metadata DB Architecture**:
+    - `metadata_db_path` defaults to `None` (no hardcoding of `data/metadata.db`).
+    - Core formal asset ingestion works 100% independently without `metadata.db`.
+    - Explicit toggle `enable_metadata_enrichment: bool = True` in `__init__`.
+    - Non-blocking SQLite read-only access (`?mode=ro`); if the DB is missing, corrupted, or locked, queries return `{}` and asset loading continues smoothly without interruption.
+    - Zero network dependencies.
 - **[`src/media_adapter/__init__.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/src/media_adapter/__init__.py)**: Exported module symbols.
 
 ---
 
-## 3. Test Suite & Verification Results
+## 3. Test Suite & Regression Reconciliation
 
-- **Unit Test File**: [`tests/test_media_adapter.py`](file:///G:/local_pc_project/personal-knowledge-pipeline/tests/test_media_adapter.py)
-  - 15/15 tests passing in 0.39s.
-  - Covers video formal assets, image album assets, optional BGM, shuffled sequence ordering defense, missing manifest, corrupt JSON, missing media file, hash mismatch detection, 0-byte file rejection, unknown content type rejection, SQLite provenance enrichment, and archive root discovery.
-- **Offline Integration Smoke**:
-  - `test_14_real_c10_video_integration_smoke`: Successfully ingested actual C10 173MB 4K HEVC video (`7681603850364521734`), verified SHA-256, enriched title/author from `metadata.db`, and projected into `pipeline.MediaAsset` with valid stream probe (duration 371.7s, 2160x3840 HEVC, 44.1kHz AAC).
-  - `test_15_real_c10_album_integration_smoke`: Successfully ingested actual C10 3-image WebP album (`7682038498466993905`), verified 1-indexed ordering and physical integrity.
+### 3.1 Unit & Integration Test Suite (`tests/test_media_adapter.py`)
+- **16/16 tests passing** in 0.44s.
+- Covers:
+  - Formal video asset ingestion & validation
+  - Image album asset ingestion & 1-indexed sequence ordering
+  - Optional BGM audio track discovery
+  - Shuffled sequence ordering defense
+  - Missing manifest detection (`ManifestNotFoundError`)
+  - Corrupt JSON detection (`ManifestInvalidError`)
+  - Missing referenced media detection (`MediaFileNotFoundError`)
+  - SHA-256 hash mismatch detection & toggle (`MediaHashMismatchError`)
+  - Zero-byte media rejection (`InvalidMediaAssetError`)
+  - Unknown content type rejection (`UnsupportedContentTypeError`)
+  - Optional SQLite metadata enrichment (`collection_items` read-only query)
+  - Multi-asset discovery via `archive_root` (`load_from_content_id`, `load_all`)
+  - Rejection of image album projection to single-video `MediaAsset`
+  - Real C10 4K HEVC video offline integration smoke test (`7681603850364521734`)
+  - Real C10 3-image WebP album offline integration smoke test (`7682038498466993905`)
+  - Explicit metadata enrichment toggle (`enable_metadata_enrichment=False`) & database failure resilience (corrupt DB non-blocking)
+
+### 3.2 Regression Baseline Discrepancy Reconciliation (672/4 -> 682/10)
+- **M2 Checkpoint Baseline**: 672 passed, 4 skipped (Total collected: 676)
+- **Current M3-01 Main Suite**: 682 passed, 10 skipped (Total collected: 692 = 676 M2 tests + 16 new M3 tests)
+  - Old tests executing: 666 passed, 10 skipped
+  - New M3 tests: 16 passed
+  - Total: 666 + 16 = 682 passed.
+- **The 4 Pre-Existing M2 Skips (Worker Environment Isolation)**:
+  1. `tests/test_f2_backend.py:885`: `Requires F2 installed in worker environment (.venv-f2)`
+  2. `tests/test_f2_backend.py:988`: `Requires F2 installed in worker environment (.venv-f2)`
+  3. `tests/test_downloader_worker.py:1519`: `Live network acquisition requires dedicated F2 worker environment (.venv-f2) and authenticated Chrome profile.`
+  4. `tests/test_downloader_worker.py:1625`: `Live network acquisition requires dedicated F2 worker environment (.venv-f2) and authenticated Chrome profile.`
+- **The 6 Tests Transitioning from Passed to Skipped**:
+  1. `tests/test_credentials.py::test_32_real_profile_smoke_read_only` (line 804)
+  2. `tests/test_credentials.py::test_33_real_profile_cold_restart` (line 854)
+  3. `tests/test_credentials.py::test_34_real_profile_scope_mismatch` (line 897)
+  4. `tests/test_douyin_auth_state.py::test_case_21_real_dedicated_profile_preflight_smoke` (line 739)
+  5. `tests/test_douyin_auth_state.py::test_case_22_real_dedicated_profile_restart_preflight` (line 780)
+  6. `tests/test_douyin_source_client.py::test_23_live_collection_fetch_smoke` (line 560)
+- **Exact Skip Reasons**:
+  - Tests 1–5: `SKIPPED: BLOCKED: Dedicated profile currently requires human captcha verification or WAF backoff (INTERACTIVE_CHALLENGE)`
+  - Test 6: `SKIPPED: BLOCKED: Dedicated profile currently requires manual human captcha verification (AUTH_CHALLENGE_REQUIRES_USER_ACTION)`
+- **Root Cause Analysis**:
+  - During C10 acceptance testing, the dedicated Chrome profile (`G:\antigravity-cli\dy\runtime\chrome-profile`) had an active human-solved captcha cookie state.
+  - Subsequently (>24h later), the Douyin web platform naturally presented a slider challenge / WAF captcha for the profile.
+  - Per explicit user mandate: **"不再访问抖音线上，不要再次浏览器挑战测试，现有 C10 live evidence 保持有效，FINAL STOP"**, no agent or human solves captchas on the live platform.
+  - The test fixtures for these 6 tests are specifically engineered with preflight challenge detection: when `INTERACTIVE_CHALLENGE` is encountered, they invoke `pytest.skip()` rather than failing.
+  - **Zero Code Regression**: None of the 6 skips were caused by M3 code changes, dependency changes, or workspace relocation. Zero tests were dropped from collection. All 676 M2 tests remain intact and collected.
 
 ---
 
@@ -74,32 +120,32 @@
                     NEXT_AGENT_START_HERE (CROSS-AGENT PROTOCOL)
 ================================================================================
 Target Audience: Any LLM / Agent (Gemini, OpenCode + GLM 5.3, Codex)
-Current Status : M3-01 DONE, ready to commit.
+Current Status : M3-01 DONE, ready for M3-02.
 
 1. CURRENT BRANCH:
    feat/m3-media-knowledge-integration
 
 2. CURRENT HEAD / BASE:
-   ffe8aa1d7e937e91a6270a042e603e0563d402e2 (main / m2-douyin-complete-r1)
+   Commit: fix(m3): finalize media adapter boundaries (incorporates M3-01 final reconciliation)
+   Base: ffe8aa1d7e937e91a6270a042e603e0563d402e2 (main / m2-douyin-complete-r1)
 
-3. UNCOMMITTED DIFF STATUS:
-   - src/media_adapter/ (new package: models.py, adapter.py, __init__.py)
-   - tests/test_media_adapter.py (15 new unit and smoke tests)
+3. COMPONENTS:
+   - src/media_adapter/ (CanonicalMediaAsset, AlbumImageArtifact, CanonicalMediaAssetAdapter)
+   - tests/test_media_adapter.py (16 unit and offline integration smoke tests)
    - docs/M3_HANDOFF.md, docs/M3_DECISIONS.md, docs/M3_TASKS.md
-   - 4 pre-existing path decoupling updates from repo relocation:
-     docs/M2_DOUYIN_COMPLETE_HANDOFF.md, src/downloader/credentials.py,
-     tests/test_downloader_worker.py, tests/test_raw_archiver.py
 
 4. CURRENT TASK:
-   M3-01: CanonicalMediaAssetAdapter -> COMPLETED.
+   M3-01: CanonicalMediaAssetAdapter -> DONE & RECONCILED.
    Next Task: M3-02 Video / ASR Integration.
 
-5. COMPLETED WORK:
-   - Researched D07 asset_manifest.json format and C10 formal video/album assets.
+5. COMPLETED WORK (M3-01):
+   - Ingested M2 formal assets (video & image album) via asset_manifest.json.
    - Built CanonicalMediaAsset and AlbumImageArtifact domain models.
-   - Built CanonicalMediaAssetAdapter with hash validation and metadata.db enrichment.
-   - Built 15 comprehensive unit & smoke tests in tests/test_media_adapter.py.
-   - Created M3 documentation triad (M3_TASKS.md, M3_DECISIONS.md, M3_HANDOFF.md).
+   - Built CanonicalMediaAssetAdapter with hash verification, 1-indexed ordering, and BGM detection.
+   - Decoupled metadata.db: optional, configurable, explicit enable_metadata_enrichment toggle,
+     and failure resilience (corrupt DB does not block asset loading).
+   - Built 16 unit & smoke tests (all passing).
+   - Reconciled 672 -> 682/10 baseline behavior (profile captcha expiration, zero regression).
 
 6. REMAINING WORK (M3-02+):
    - M3-02: Adapt pipeline.py so that video CanonicalMediaAsset streams into ASR

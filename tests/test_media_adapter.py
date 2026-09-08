@@ -494,3 +494,63 @@ def test_15_real_c10_album_integration_smoke() -> None:
         assert img.byte_size > 0
         assert len(img.sha256) == 64
     assert asset.has_audio is False
+
+
+def test_16_metadata_enrichment_explicit_toggle_and_failure_resilience(tmp_path: Path) -> None:
+    # 1. Prepare asset
+    content_dir = tmp_path / "douyin" / "7681603850364521734"
+    _, v_sha, v_size = _write_file_with_hash(content_dir / "video.mp4", b"video_data_sample")
+    manifest_data = {
+        "schema_version": "1.0",
+        "platform": "douyin",
+        "platform_content_id": "7681603850364521734",
+        "assets": [{"file_name": "video.mp4", "role": "PRIMARY_VIDEO", "byte_size": v_size, "sha256": v_sha, "content_type": "video"}],
+    }
+    (content_dir / "asset_manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    # 2. Prepare mock valid DB
+    db_path = tmp_path / "metadata.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE collection_items (platform_content_id TEXT, platform TEXT, canonical_json TEXT)")
+    con.execute(
+        "INSERT INTO collection_items VALUES (?, ?, ?)",
+        ("7681603850364521734", "douyin", json.dumps({"title": "Test Title", "author": {"display_name": "Author"}})),
+    )
+    con.commit()
+    con.close()
+
+    # Case A: Explicitly disabled toggle (enable_metadata_enrichment=False) even when db path exists
+    adapter_disabled = CanonicalMediaAssetAdapter(
+        metadata_db_path=db_path,
+        validate_hashes=False,
+        enable_metadata_enrichment=False,
+    )
+    asset_disabled = adapter_disabled.load_from_dir(content_dir)
+    assert asset_disabled.source_metadata == {}
+    assert asset_disabled.title == "7681603850364521734"
+    assert asset_disabled.author_name is None
+
+    # Case B: Enabled toggle (default True) populates metadata
+    adapter_enabled = CanonicalMediaAssetAdapter(
+        metadata_db_path=db_path,
+        validate_hashes=False,
+        enable_metadata_enrichment=True,
+    )
+    asset_enabled = adapter_enabled.load_from_dir(content_dir)
+    assert asset_enabled.source_metadata.get("title") == "Test Title"
+    assert asset_enabled.author_name == "Author"
+
+    # Case C: Broken / corrupt DB file does NOT block or raise during asset loading
+    corrupt_db_path = tmp_path / "corrupt.db"
+    corrupt_db_path.write_bytes(b"NOT_A_VALID_SQLITE_DATABASE_HEADER_GARBAGE")
+
+    adapter_corrupt = CanonicalMediaAssetAdapter(
+        metadata_db_path=corrupt_db_path,
+        validate_hashes=False,
+        enable_metadata_enrichment=True,
+    )
+    asset_corrupt = adapter_corrupt.load_from_dir(content_dir)
+    assert asset_corrupt.is_video is True
+    assert asset_corrupt.source_metadata == {}
+    assert asset_corrupt.title == "7681603850364521734"
+

@@ -47,10 +47,12 @@ class CanonicalMediaAssetAdapter:
         archive_root: Path | str | None = None,
         metadata_db_path: Path | str | None = None,
         validate_hashes: bool = True,
+        enable_metadata_enrichment: bool = True,
     ) -> None:
         self.archive_root = Path(archive_root).resolve() if archive_root else None
         self.metadata_db_path = Path(metadata_db_path).resolve() if metadata_db_path else None
         self.validate_hashes = validate_hashes
+        self.enable_metadata_enrichment = enable_metadata_enrichment
 
     def load_from_dir(self, content_dir: Path | str) -> CanonicalMediaAsset:
         """Loads and verifies a formal asset from its content directory."""
@@ -262,6 +264,9 @@ class CanonicalMediaAssetAdapter:
 
     def _load_collector_metadata(self, platform: str, platform_content_id: str) -> dict[str, Any]:
         """Read-only query to fetch canonical collector metadata from SQLite metadata.db if present."""
+        if not self.enable_metadata_enrichment:
+            return {}
+
         if not self.metadata_db_path or not self.metadata_db_path.is_file():
             return {}
 

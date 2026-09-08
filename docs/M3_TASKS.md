@@ -10,7 +10,7 @@
 
 | Task ID | Task Title | Owner | Status | Dependencies | Target Deliverable |
 | :--- | :--- | :--- | :---: | :--- | :--- |
-| **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DOING`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
+| **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DONE`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
 | **M3-02** | Video / ASR Integration | TBD | **`TODO`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
 | **M3-03** | Image Album OCR/VLM Integration | TBD | **`TODO`** | M3-01 | Multi-image visual inspection pipeline |
 | **M3-04** | Metadata & Provenance Binding | TBD | **`TODO`** | M3-01, M3-02 | Grounded provenance binding across media + collector DB |
@@ -21,7 +21,7 @@
 
 ## 2. Detailed Task Breakdown
 
-### M3-01: CanonicalMediaAssetAdapter (`DOING`)
+### M3-01: CanonicalMediaAssetAdapter (`DONE`)
 - **Objective**: Provide a deterministic, read-only adapter that loads M2 D07 `asset_manifest.json` from formal archive directories and constructs a canonical in-memory domain representation (`CanonicalMediaAsset`) consumable by downstream media processors.
 - **In Scope**:
   - Deterministic parsing of video and image album formal assets.

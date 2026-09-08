@@ -61,3 +61,15 @@
   - `CanonicalMediaAssetAdapter` supports optional read-only enrichment from `data/metadata.db`.
   - When `metadata_db_path` is provided and valid, the adapter performs a read-only query on `collection_items` for the `platform_content_id` to populate `source_metadata`.
   - If `metadata.db` is not present (e.g. in isolated unit test harnesses), `source_metadata` gracefully defaults to empty or manifest-derived metadata.
+
+---
+
+## Decision 6: Decoupled Metadata DB Architecture & Formal Asset Independence
+- **Context**: Audit whether `CanonicalMediaAssetAdapter` couples hardcodedly to `data/metadata.db` or allows completely standalone operation.
+- **Decision**:
+  - **Zero Hardcoded Coupling**: `CanonicalMediaAssetAdapter` never hardcodes the path `data/metadata.db`. `metadata_db_path` defaults to `None`.
+  - **Standalone Core Ingestion**: Formal asset loading (`load_from_dir`) relies solely on the asset directory and `asset_manifest.json`. File integrity, ordering, type discrimination, and path extraction function 100% independently without any SQLite database present.
+  - **Explicit Enrichment Toggle**: Introduced `enable_metadata_enrichment: bool = True` in `CanonicalMediaAssetAdapter.__init__`. Callers can explicitly disable DB queries even if a database path is supplied.
+  - **Non-blocking Resilience**: SQLite access is strictly read-only (`?mode=ro`). Any SQLite error (file missing, schema mismatch, lock, corruption, invalid JSON) is caught and handled gracefully: `source_metadata` safely defaults to `{}` without failing or blocking asset loading.
+  - **Zero Network**: Adapter operations remain entirely local and offline.
+
