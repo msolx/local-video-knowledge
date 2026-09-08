@@ -1,0 +1,54 @@
+# Milestone M3: Media Knowledge Integration · Task Board
+
+> **Milestone Status**: `STARTED`  
+> **Target Goal**: `Formal Local Asset (M2 Output) -> Media Processing -> Grounded Evidence (M3 Output)`  
+> **Handoff Contract**: Cross-Agent / Cross-Harness Compatible (Gemini, OpenCode, GLM, Codex)
+
+---
+
+## 1. Task Progression Matrix
+
+| Task ID | Task Title | Owner | Status | Dependencies | Target Deliverable |
+| :--- | :--- | :--- | :---: | :--- | :--- |
+| **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DOING`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
+| **M3-02** | Video / ASR Integration | TBD | **`TODO`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
+| **M3-03** | Image Album OCR/VLM Integration | TBD | **`TODO`** | M3-01 | Multi-image visual inspection pipeline |
+| **M3-04** | Metadata & Provenance Binding | TBD | **`TODO`** | M3-01, M3-02 | Grounded provenance binding across media + collector DB |
+| **M3-05** | Long Media Chunking | TBD | **`TODO`** | M3-02 | Hierarchical segment chunking & merge validation |
+| **M3-06** | M3 End-to-End Acceptance | TBD | **`TODO`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
+
+---
+
+## 2. Detailed Task Breakdown
+
+### M3-01: CanonicalMediaAssetAdapter (`DOING`)
+- **Objective**: Provide a deterministic, read-only adapter that loads M2 D07 `asset_manifest.json` from formal archive directories and constructs a canonical in-memory domain representation (`CanonicalMediaAsset`) consumable by downstream media processors.
+- **In Scope**:
+  - Deterministic parsing of video and image album formal assets.
+  - Strict file existence and optional SHA-256 validation against manifest commitments.
+  - Ordered album image sequences (1-indexed sequence sorting).
+  - Optional BGM / audio track discovery (never assuming BGM is present).
+  - Source provenance retention (`task_id`, `scope_id`, `source_sync_run_id`, `platform`, `platform_content_id`).
+  - Read-only collector metadata binding via `data/metadata.db` when available.
+  - Projection to legacy `MediaAsset` for seamless entry into `pipeline.process_asset()`.
+  - Comprehensive unit test suite (`tests/test_media_adapter.py`).
+  - Offline smoke test with actual C10 video and album assets.
+- **Out of Scope**:
+  - ASR / OCR / VLM model execution.
+  - Direct Douyin network access or live F2 calls.
+  - Modification of frozen M2 code (`src/collector/`, `src/downloader/`).
+
+### M3-02: Video / ASR Integration (`TODO`)
+- Direct streaming of `CanonicalMediaAsset` into pipeline ASR stage without manual incoming folder dropping or redundant remuxing.
+
+### M3-03: Image Album OCR/VLM Integration (`TODO`)
+- Sequential frame/image inspection for image albums using PP-OCRv6 and on-demand VLM fallback.
+
+### M3-04: Metadata & Provenance Binding (`TODO`)
+- Traceable knowledge evidence linking extracted claims/visual points to M2 collector records and original platform items.
+
+### M3-05: Long Media Chunking (`TODO`)
+- Dynamic chunking of long transcripts and image batches with hierarchical summary merging.
+
+### M3-06: M3 End-to-End Acceptance (`TODO`)
+- Final closure audit for M3: formal local assets -> evidence generation.
