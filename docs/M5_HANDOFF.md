@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `DONE`; M5-03 ~ M5-06 = `TODO`)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `DONE`; M5-03 = `DONE`; M5-04 ~ M5-06 = `TODO`)
 > **Source Baseline**: Milestone M4 Sealed at Tag `m4-unified-knowledge-model-complete` (`92775b9ad862bc179f041c8ad56c2ee1c1bd8e49`).
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
 
@@ -102,6 +102,44 @@ embeddings, no reranker. Retrieval returns hits, never answers.
 - Targeted suite: 92 passed (47 store + 45 fts). Full regression:
   **1078 passed, 10 skipped** (M5-01 baseline 1033 + 45 new; zero regressions).
 
+### M5-03 Deliverables Completed:
+- `src/knowledge/retrieval.py`: public Evidence-Grounded Retrieval API.
+  - Frozen contracts `RetrievalQuery` / `RetrievalHit` / `RetrievalResult` with
+    JSON-safe `to_dict`/`from_dict`; `RetrievalQuery` validates `query_text`,
+    `top_k ∈ [1, 100]`, and filter enums; `retrieve(db_path, query)` is the
+    stable entrypoint (also behind `FTS5RetrievalBackend`).
+  - Deterministic normalization (NFKC + strip + whitespace collapse) + literal
+    term planner. Long terms (≥3 chars) → trigram FTS with literal AND; short
+    terms (1–2 chars) → deterministic `instr(lower(...))` substring fallback over
+    `knowledge_fts_content` (weighted short score, higher better); mixed →
+    FTS + short conditions (AND). No FTS operator authority for user text.
+  - Structured filters (`canonical_ids`, `unit_types`,
+    `verification_statuses`, `topics`, `entity_names`) applied in SQL **before**
+    ranking/LIMIT; same-category OR, cross-category AND; enum-validated.
+  - Canonical hydration from `canonical_payload_json` via
+    `CanonicalKnowledgeUnit.from_dict()`; **evidence expansion always on**
+    (full refs, canonical order); `source_artifact` from `ingested_assets`;
+    `match_info` + `ranking_diagnostics` deterministic.
+  - `RetrievalResult` carries `store_schema_version` + `store_revision`;
+    BM25 lower-is-better, short score higher-is-better, never comparable; ties
+    break on `unit_rowid` ASC; empty results legal; no cache; no LLM fallback.
+- `src/knowledge/__init__.py`: M5-03 exports added.
+- `tests/test_knowledge_retrieval.py`: 56 tests (validation, normalization,
+  planner, long-FTS AND, short/1-char fallback + top_k, mixed, FTS operator
+  safety, all structured filters + filter-before-limit, hydration, evidence
+  ordering/coordinates, attribution/lineage, source artifact, store revision,
+  match info, BM25/short-score direction, deterministic ties, zero result, no
+  LLM fallback, Unicode, SQL-injection safety, JSON round-trip, backend
+  abstraction, real C10 golden queries).
+- Real C10 retrieval (temp/test DB): `Vulkan`/`RDNA`/`Thinking`/`27B` → video
+  hits with populated evidence refs; `logitech`/`AGON`/`SMILEY` → album hits;
+  `模型`/`速度` (2-char) → video hits via short fallback; `推理` (absent) → 0
+  hits without error; `Vulkan 模型` → mixed AND; video+`logitech` → 0 hits,
+  album+`logitech` → hits; claim / not_checked filters pass.
+- Targeted suite: 184 passed (36 models + 47 store + 45 fts + 56 retrieval).
+  Full regression: **1134 passed, 10 skipped** (M5-02 baseline 1078 + 56 new;
+  zero regressions).
+
 ---
 
 ## 2. Key Architecture Invariants & Contracts
@@ -132,25 +170,31 @@ embeddings, no reranker. Retrieval returns hits, never answers.
    `data/processed/*/knowledge/knowledge_units.json`, validates each via
    `CanonicalKnowledgeUnitsDocument`, **fails fast** on invalid artifacts.
 9. **Weighted FTS5 (Option B′ + Decision 21/22)**: columns `statement`
-   (highest), `entity_names` (medium), `topics` (medium), `evidence_excerpts`
-   (lowest); external-content FTS5 over the derived `knowledge_fts_content`
-   projection (`content_rowid='unit_rowid'`), **`trigram` tokenizer** (probe
-   proved `unicode61` unusable for the Chinese-dominant mixed corpus), `bm25()`
-   weights `(5.0, 2.0, 2.0, 1.0)`. Index and rows update in the same
-   transaction via triggers. Short (<3 char) queries are a documented
-   limitation with no fallback this round.
+    (highest), `entity_names` (medium), `topics` (medium), `evidence_excerpts`
+    (lowest); external-content FTS5 over the derived `knowledge_fts_content`
+    projection (`content_rowid='unit_rowid'`), **`trigram` tokenizer** (probe
+    proved `unicode61` unusable for the Chinese-dominant mixed corpus), `bm25()`
+    weights `(5.0, 2.0, 2.0, 1.0)`. Index and rows update in the same
+    transaction via triggers. Short (<3 char) queries use the deterministic
+    M5-03 substring fallback (Decision 25).
 10. **Retrieval ≠ answering**: no LLM, no RAG, no citations, no answer
     synthesis. No embeddings/vector/dense/hybrid/reranker in M5; `retrieval_method`
     + `RetrievalBackend` reserve extension points only.
-11. **Retrieval contract**: `RetrievalQuery` (`query_text`, `top_k`, filters:
-    `canonical_ids`, `unit_types`, `verification_statuses`, `topics`,
+11. **Retrieval contract**: `RetrievalQuery` (`query_text`, `top_k ∈ [1, 100]`,
+    filters: `canonical_ids`, `unit_types`, `verification_statuses`, `topics`,
     `entity_names`), `RetrievalHit` (rank + full canonical unit + verbatim
     `evidence_refs` + `source_artifact` + `match_info` + `ranking_diagnostics`),
     `RetrievalResult` (query, `retrieval_method`, `store_schema_version`,
-    `result_count`, hits).
-12. **Score semantics**: `retrieval_method = "lexical_fts5"`,
-    `score_components = {"lexical": <bm25>}`; retrieval score ≠ truth
-    probability ≠ extraction confidence ≠ verification status.
+    `store_revision`, `result_count`, hits). Public entrypoint `retrieve()`.
+    Query planner: long terms (≥3 chars) → trigram FTS literal AND; short terms
+    (1–2 chars) → deterministic `instr()` substring fallback; mixed → both.
+12. **Score semantics**: methods `lexical_fts5_trigram`,
+    `lexical_substring_short`, `lexical_fts5_trigram_with_short_filter`. FTS
+    path: `raw_bm25`, **lower is better** (`ORDER BY bm25 ASC`, ties by
+    `unit_rowid` ASC), never negated into a probability. Short path:
+    `weighted_substring_score`, **higher is better**, never comparable to BM25.
+    Retrieval score ≠ truth probability ≠ extraction confidence ≠ verification
+    status.
 13. **Evidence expansion is mandatory**: `RetrievalHit.evidence_refs` always
     populated (id + verbatim excerpt + temporal/sequence coordinates).
 14. **Verification semantics**: ranking never auto-boosts `verified` or
@@ -200,10 +244,13 @@ embeddings, no reranker. Retrieval returns hits, never answers.
   `tests/test_knowledge_fts.py`; `src/knowledge/store.py` extended (FTS schema,
   sync, validation) without rewriting M5-01 ingestion semantics;
   `src/knowledge/__init__.py` extended with M5-02 exports.
+- **M5-03 Additions**: `src/knowledge/retrieval.py`,
+  `tests/test_knowledge_retrieval.py`; `src/knowledge/__init__.py` extended with
+  M5-03 exports. `store.py` / `fts.py` / `models.py` untouched by M5-03.
 - **Zero M4 code modified**: `models.py`, `extractor.py`, `merger.py`,
   `enrichment.py`, `render.py` untouched. No FTS5, no search, no LLM, no
   runtime started or probed.
-- **No production DB written**: all M5-01/M5-02 ingestion/validation ran on
+- **No production DB written**: all M5-01/M5-02/M5-03 ingestion/retrieval ran on
   temp/test SQLite DBs. The official `data/knowledge/knowledge_store.sqlite3`
   will be built at milestone acceptance (M5-06) or a later explicit step.
 
@@ -223,21 +270,21 @@ not require any runtime.
 
 ## 5. NEXT_AGENT_START_HERE
 
-- **Task**: `M5-03 · Retrieval API & Evidence Expansion`
-- **Objective**: Build the public Retrieval API (`RetrievalQuery` /
-  `RetrievalHit` / `RetrievalResult`) on top of the sealed M5-01 store and the
-  M5-02 `trigram` FTS index: weighted `bm25()` lexical ranking, always-populated
-  verbatim `evidence_refs`, structured filters (`canonical_ids`, `unit_types`,
-  `verification_statuses`, `topics`, `entity_names` — projected columns, never
-  FTS substring search), `retrieval_method="lexical_fts5"`,
-  `score_components={"lexical": bm25}`, `match_info`, `ranking_diagnostics`, and
-  a deterministic short-query (<3 chars) fallback for the trigram limitation.
-  Per `docs/M5_KNOWLEDGE_STORE_DESIGN.md` §12-§15 and `docs/M5_DECISIONS.md`
-  Decisions 13-17, 21, 23.
-- **Do not begin M5-04** or later tasks.
+- **Task**: `M5-04 · Filtering, Ranking & Query Diagnostics`
+- **Objective**: Harden the retrieval layer's structured filters, BM25 ranking
+  + score components, and query diagnostics on top of M5-03's
+  `src/knowledge/retrieval.py` (frozen M5-03 contracts are the input):
+  - Filters `canonical_ids`, `unit_types`, `verification_statuses`, `topics`,
+    `entity_names` against structured projection columns (never FTS substring),
+    already implemented in M5-03 — extend/diagnose as needed.
+  - `score_components = {"lexical": <bm25>}`; explicit non-equivalence of
+    retrieval score vs confidence vs verification (Decision 27/28).
+  - Ranking never auto-boosts `verified` / penalizes `not_checked` (Design §16).
+  - `top_k` bound; diagnostics (candidates scanned, filter stats).
+  - Short-query fallback and mixed-path planning are already sealed (Decision 25).
+- **Do not begin M5-05** or later tasks.
 - **Hard constraints**:
-  - M5-01 store + M5-02 FTS are sealed; the retrieval layer reads them only.
+  - M5-01 store + M5-02 FTS + M5-03 retrieval contracts are sealed; read-only.
   - M4 canonical artifacts remain read-only. No LLM, no embeddings, no runtime
     probing.
-  - Short-query fallback must be deterministic (no `LIKE` substring scan, no
-    LLM-based query rewriting).
+  - Retrieval ≠ answering: no RAG, no citations, no answer synthesis.

@@ -129,6 +129,21 @@ from .fts import (
     fts_index_count,
     fts_integrity_check,
 )
+from .retrieval import (
+    MIN_TOP_K,
+    MAX_TOP_K,
+    RETRIEVAL_METHOD_FTS,
+    RETRIEVAL_METHOD_SHORT,
+    RETRIEVAL_METHOD_MIXED,
+    normalize_retrieval_query,
+    plan_literal_terms,
+    RetrievalQuery,
+    RetrievalHit,
+    RetrievalResult,
+    RetrievalBackend,
+    FTS5RetrievalBackend,
+    retrieve,
+)
 
 __all__ = [
     "TranscriptChunk",
@@ -259,5 +274,19 @@ __all__ = [
     "lexical_search_rows",
     "fts_index_count",
     "fts_integrity_check",
+    # M5-03 Evidence-Grounded Retrieval API
+    "MIN_TOP_K",
+    "MAX_TOP_K",
+    "RETRIEVAL_METHOD_FTS",
+    "RETRIEVAL_METHOD_SHORT",
+    "RETRIEVAL_METHOD_MIXED",
+    "normalize_retrieval_query",
+    "plan_literal_terms",
+    "RetrievalQuery",
+    "RetrievalHit",
+    "RetrievalResult",
+    "RetrievalBackend",
+    "FTS5RetrievalBackend",
+    "retrieve",
 ]
 

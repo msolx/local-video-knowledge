@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`; M5-03 next)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`, M5-03 = `DONE`; M5-04 next)
 > **Status**: APPROVED / ACTIVE
 > **Context**: M4 is COMPLETE/SEALED (`knowledge_units.json` schema `knowledge-units-v1`). M5 builds a derived, rebuildable, queryable Knowledge Store with a lexical retrieval contract, offline and deterministic.
 
@@ -188,7 +188,7 @@
   - Freeze **`trigram`** as the M5 v1 lexical tokenizer for the store's FTS index.
   - This is a bounded implementation-decision correction under the original M5-00 architecture, **not** a redesign of the M5 Retrieval Contract (RetrievalQuery/Hit/Result, field weights, and index semantics are unchanged).
   - `store_meta` records `fts_policy_version = "m5-fts-trigram-v1"` and `fts_tokenizer = "trigram"` so a future schema/tokenizer change is detectable without a migration engine.
-- **Known lexical limitation (documented, not a bug)**: `trigram` cannot match queries shorter than 3 characters. This round **intentionally provides no fallback** (no `LIKE`, no substring scan). M5-03/M5-04 will add a deterministic short-query fallback if needed.
+- **Known lexical limitation (documented, not a bug)**: `trigram` cannot match queries shorter than 3 characters. M5-02 intentionally provided no fallback; **M5-03 adds a deterministic short-query fallback** (Decision 25) so 1–2 character Chinese terms (`模型`, `推理`, `速度`) never return empty.
 
 ---
 
@@ -208,3 +208,64 @@
 - **Decision**:
   - User `query_text` is always passed via **parameterized SQL**; the MATCH string is built by `literal_fts_query` — the entire input is wrapped in double quotes with embedded quotes doubled, making it a literal FTS5 phrase. No query parser is built.
   - M5-02 exposes only the low-level internal helper `lexical_search_rows(conn, query_text, limit)` returning `(unit_rowid, bm25_score)`; the public Retrieval API (`RetrievalQuery`/`RetrievalHit`/`RetrievalResult`) and structured filters (`canonical_ids`, `unit_types`, `verification_statuses`, `topics`, `entity_names`) are M5-03 scope and are **not** implemented here.
+
+---
+
+## Decision 24: M5-03 Public Retrieval API Lives in `src/knowledge/retrieval.py`
+- **Context**: `store.py` is storage and `fts.py` is the low-level lexical index. A public Retrieval API must not grow inside either.
+- **Decision**:
+  - New module `src/knowledge/retrieval.py` owns the public contract: `RetrievalQuery` → Query Planner → SQLite lexical retrieval + structured filters → canonical hydration → evidence expansion → `RetrievalHit[]` → `RetrievalResult`.
+  - Stable entrypoint `retrieve(db_path, query)` (also exposed through `KnowledgeRetriever`-style `FTS5RetrievalBackend` for the design's backend abstraction). Callers never touch the sqlite Connection.
+  - `RetrievalQuery`/`RetrievalHit`/`RetrievalResult` are frozen dataclasses with JSON-safe `to_dict`/`from_dict` (enums as canonical strings; no Row/Path/Connection leakage). `top_k` is bounded to `[1, 100]`. `query_text` is required and non-empty after normalization.
+  - `RetrievalResult` carries the current deterministic `store_revision` (from M5-01 `compute_store_revision`) plus `store_schema_version`, `retrieval_method`, `result_count`, `hits`, `diagnostics`. No LLM answer, no generated answer, no truth score.
+
+---
+
+## Decision 25: Query Planner — Long Terms via Trigram FTS, Short Terms via Deterministic Substring
+- **Context**: trigram cannot match terms shorter than 3 characters (Decision 21 known limitation). M5-03 must not let `模型` / `推理` / `速度` return empty.
+- **Decision**:
+  - Query normalization is deterministic only: Unicode **NFKC**, strip, collapse whitespace. No stemming, no synonyms, no LLM expansion, no Chinese word segmentation. The original `query_text` stays in `RetrievalResult`.
+  - The normalized query is split by whitespace into **literal terms**; each term is data only and can never gain FTS operator authority (`OR`/`NEAR`/`*`/`:`/parens/quotes are inert).
+  - **Long terms (≥3 codepoints)** → trigram FTS via `literal_fts_query`, multiple long terms joined with literal **AND** (`"Vulkan" AND "27B"`), i.e. conceptual AND, not the contiguous phrase `"Vulkan 27B"`.
+  - **Short terms (1–2 codepoints)** → deterministic literal substring fallback over the materialized `knowledge_fts_content` using parameterized `instr(lower(col), lower(?)) > 0` — **not** `LIKE` wildcards (query stays literal). ASCII matching is case-insensitive via `lower()`; CJK matches verbatim.
+  - **Mixed long + short** → FTS constrains the long terms, then structured substring conditions require every short term to also match content (AND). An all-short query uses the substring fallback alone (documented v1 scalability limitation: substring scan over the materialized content table; acceptable at personal-knowledge scale, revisit in a later milestone — no new tokenizer/plugin this round).
+  - One-character queries are allowed through the deterministic fallback with strict `top_k`.
+
+---
+
+## Decision 26: Structured Filters Apply in SQL Before Ranking / LIMIT
+- **Context**: Filtering after LIMIT would drop valid hits (take top-10 then filter → leftovers). Filters must not be text-mangled into FTS MATCH.
+- **Decision**:
+  - `canonical_ids` / `unit_types` / `verification_statuses` filter the `knowledge_units` projection columns; `topics` / `entity_names` use `EXISTS` over the structured child tables (exact value match, no fuzzy/alias/substring in v1).
+  - Filters are applied **inside the SQL WHERE before ORDER BY + LIMIT**, so ranking and the `top_k` bound operate only on rows that pass all filters.
+  - Multiple values within one filter are OR'd; different filter categories are AND'd.
+  - `unit_types` and `verification_statuses` are validated against the canonical enums (`UnitType`, `VerificationStatus`); illegal values raise `ValueError` — never silently ignored.
+  - Empty / `None` filter collections mean "unset"; they never generate always-false SQL.
+
+---
+
+## Decision 27: Canonical Hydration & Evidence Expansion in RetrievalHits
+- **Context**: Projection columns are for search/filter; they must never be re-assembled into a "fake" canonical unit.
+- **Decision**:
+  - A hit's content is hydrated from `knowledge_units.canonical_payload_json` via `CanonicalKnowledgeUnit.from_dict()` — the exact M4 canonical gate. Projections are used only for search/filter.
+  - `RetrievalHit.evidence_refs` is **always fully populated** (id + verbatim `source_excerpt` + `temporal_range` / `sequence_range`) in the canonical unit's original evidence order — never truncated, never re-sorted.
+  - `source_artifact = {path, fingerprint}` comes from `ingested_assets` (the Store's recorded provenance), never from re-scanning `data/processed`.
+  - `match_info = {matched_on: [...], matched_terms: [...]}` is derived by deterministic literal field-content checks; `ranking_diagnostics` records the method, `raw_bm25` (FTS paths), `weighted_substring_score` (short path), `long_terms`/`short_terms` (mixed path), and `rank`. No model ever explains "why relevant".
+
+---
+
+## Decision 28: Score Semantics — BM25 Lower Is Better, Short Score Higher Is Better, Never Comparable
+- **Context**: FTS5 `bm25()` returns a score where **smaller (more negative) is better**; negating it into a fake 0–1 probability is forbidden. The short-query fallback cannot impersonate BM25.
+- **Decision**:
+  - FTS paths rank `ORDER BY bm25 ASC` and expose `raw_bm25` as a diagnostic (e.g. `-3.17`); ties break on `unit_rowid` ASC. BM25 is never multiplied by −1 nor presented as a relevance probability.
+  - The short path uses an independent deterministic score `lexical_substring_short` (sum of matched field weights: statement 5, entity_names 2, topics 2, evidence_excerpts 1; multiple terms accumulate), where **higher is better**; it is never normalized into the same 0–1 space as BM25.
+  - Stable retrieval-method names: `lexical_fts5_trigram`, `lexical_substring_short`, `lexical_fts5_trigram_with_short_filter`. This is lexical retrieval, never "semantic_search".
+  - Empty results are legal (`result_count == 0`, `hits == []`); there is no LLM fallback, no answer guessing, no query broadening, and filters are never dropped.
+
+---
+
+## Decision 29: Deterministic Ordering, No Retrieval Cache
+- **Context**: Same DB + query + filters + `top_k` must reproduce the same rank/order/hits; SQLite's default row order is undefined.
+- **Decision**:
+  - Every retrieval path orders by its score then a stable tie-break on `unit_rowid` ASC, so results are fully deterministic across calls and processes.
+  - M5-03 introduces **no persistent retrieval cache** (no `retrieval_cache` table, no Redis, no disk query cache); SQLite retrieval is fast enough at this scale.

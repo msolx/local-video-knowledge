@@ -2,7 +2,7 @@
 
 > **Milestone Target**: A derived, rebuildable SQLite Knowledge Store over the canonical M4 `knowledge_units.json` artifacts, plus a stable lexical retrieval contract with full evidence expansion. Offline and deterministic; no LLM, no embeddings.
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
-> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `TODO` | M5-04 = `TODO` | M5-05 = `TODO` | M5-06 = `TODO`
+> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `DONE` | M5-04 = `TODO` | M5-05 = `TODO` | M5-06 = `TODO`
 
 ---
 
@@ -13,7 +13,7 @@
 | **M5-00** | **Contract Design** | Sealed | **`DONE / SEALED`** | M4 Acceptance | `docs/M5_*.md` (Design & Contract Freeze) |
 | **M5-01** | **Canonical Knowledge Store & Idempotent Ingestion** | Complete | **`DONE`** | M5-00 | `src/knowledge/store.py`, `tests/test_knowledge_store.py` |
 | **M5-02** | **SQLite FTS5 Lexical / Metadata Indexing** | Complete | **`DONE`** | M5-01 | `src/knowledge/fts.py`, `tests/test_knowledge_fts.py` |
-| **M5-03** | **Retrieval API & Evidence Expansion** | — | **`TODO`** | M5-01, M5-02 | `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py` |
+| **M5-03** | **Retrieval API & Evidence Expansion** | Complete | **`DONE`** | M5-01, M5-02 | `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py` |
 | **M5-04** | **Filtering, Ranking & Query Diagnostics** | — | **`TODO`** | M5-03 | `src/knowledge/retrieval.py` (filter/rank layer), `tests/test_knowledge_retrieval_filters.py` |
 | **M5-05** | **Retrieval Evaluation Harness & C10 Golden Queries** | — | **`TODO`** | M5-03, M5-04 | `scripts/run_m5_05_evaluation.py`, `tests/test_m5_retrieval_evaluation.py` |
 | **M5-06** | **End-to-End Acceptance** | — | **`TODO`** | M5-01 ~ M5-05 | `docs/M5_FINAL_ACCEPTANCE.md` |
@@ -101,14 +101,25 @@
   - Full regression: **1078 passed, 10 skipped** (M5-01 baseline 1033 + 45 new
     FTS tests; zero regressions).
 
-### M5-03: Retrieval API & Evidence Expansion (`TODO`)
+### M5-03: Retrieval API & Evidence Expansion (`DONE`)
 - **Objective**: Implement the retrieval contract with mandatory full evidence expansion.
-- **Target Scope**:
-  - `src/knowledge/retrieval.py`: `RetrievalQuery`, `RetrievalHit`, `RetrievalResult`, `RetrievalBackend` abstraction.
-  - `FTS5RetrievalBackend` (`retrieval_method = "lexical_fts5"`); extension points reserved for future dense/hybrid.
-  - `RetrievalHit` carries verbatim canonical units (from `canonical_payload_json`), attribution, entities, topics, evidence refs, `source_artifact`, `match_info`, `ranking_diagnostics`.
-  - Retrieval ≠ answering: no LLM, no RAG, no citations, no answer synthesis.
-- **Deliverable**: `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py`.
+- **Delivered**:
+  - `src/knowledge/retrieval.py`:
+    - Frozen public contracts `RetrievalQuery` / `RetrievalHit` / `RetrievalResult` with JSON-safe `to_dict`/`from_dict` (enums as canonical strings; no Row/Path/Connection leakage).
+    - Stable entrypoint `retrieve(db_path, query)`; `FTS5RetrievalBackend` implements the design's `RetrievalBackend` abstraction (`retrieval_method="lexical_fts5_trigram"`). Callers never touch the sqlite Connection.
+    - `RetrievalQuery` validates `query_text` (non-empty after strip), `top_k ∈ [1, 100]`, `unit_types` / `verification_statuses` against canonical enums (illegal → `ValueError`). Empty filter collections = unset.
+    - Deterministic query normalization: NFKC + strip + collapse whitespace only (no stemming/synonyms/segmentation). `plan_literal_terms` splits by whitespace into literal terms.
+    - **Long-term path** (≥3 codepoints): trigram FTS with literal AND semantics via `literal_fts_query`; `raw_bm25` ranked `ORDER BY bm25 ASC`.
+    - **Short-term fallback** (1–2 codepoints): deterministic literal substring over `knowledge_fts_content` using parameterized `instr(lower(col), lower(?)) > 0` (no `LIKE`); `lexical_substring_short` weighted score (statement 5 / entity_names 2 / topics 2 / evidence_excerpts 1), higher is better; one-character queries allowed with strict `top_k`.
+    - **Mixed long+short**: FTS constrains long terms, structured substring conditions require every short term too (AND).
+    - **Structured filters** applied in SQL before ranking/LIMIT: `canonical_ids`/`unit_types`/`verification_statuses` on projection columns; `topics`/`entity_names` via `EXISTS` on structured child tables. Same-category values OR'd, categories AND'd.
+    - **Canonical hydration** from `canonical_payload_json` via `CanonicalKnowledgeUnit.from_dict()` (never reassembled from projections); **evidence expansion always on** (full refs in canonical order, id + verbatim excerpt + temporal/sequence coordinates).
+    - `source_artifact = {path, fingerprint}` from `ingested_assets`; `match_info` (`matched_on`/`matched_terms`) via deterministic field-content checks; `ranking_diagnostics` with method + `raw_bm25` / `weighted_substring_score` / long/short terms + `field_weights` + `rank`.
+    - `RetrievalResult` carries `store_schema_version` + deterministic `store_revision`; empty results are legal; no retrieval cache; no LLM fallback; deterministic tie-break on `unit_rowid` ASC.
+  - `src/knowledge/__init__.py` extended with M5-03 exports.
+  - `tests/test_knowledge_retrieval.py`: 56 collected tests covering query validation/normalization, long-term FTS, multiple-long-term AND, 2-char & 1-char fallback + top_k, mixed long+short, FTS operator safety, all structured filters (incl. filter-before-limit), hydration, evidence ordering + both coordinate types, attribution/lineage, source artifact path/fingerprint, store revision, match info, BM25 lower-is-better, short-score higher-is-better, deterministic ties, zero result, no-LLM fallback, Unicode queries, SQL-injection safety, JSON round-trip, backend abstraction, and real C10 golden queries.
+  - Real C10 retrieval (temp/test DB only): `Vulkan`/`RDNA`/`Thinking`/`27B` → video-only hits with populated evidence refs; `logitech`/`AGON`/`SMILEY` → album-only hits; `模型`/`速度` (2-char) → video hits via short fallback; `推理` (2-char, absent from corpus) → fallback runs with 0 hits; `Vulkan 模型` → mixed path requires both; structured filters behave correctly (video+`logitech` → 0 hits; album+`logitech` → hits; claim / not_checked filters pass through).
+  - Full regression: **1134 passed, 10 skipped** (M5-02 baseline 1078 + 56 new retrieval tests; zero regressions).
 
 ### M5-04: Filtering, Ranking & Query Diagnostics (`TODO`)
 - **Objective**: Structured filters, BM25 ranking + score components, and diagnostics with the no-verification-bias rule.
