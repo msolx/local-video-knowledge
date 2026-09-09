@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M4-03 `DONE`; M4-04 next)
+> **Milestone Status**: `IN_PROGRESS` (M4-04 `DONE`; M4-05 next)
 > **Status**: APPROVED / ACTIVE  
 > **Context**: Transitioning from Grounded Evidence (M3 Output) to Structured Canonical Knowledge Units (M4 Output).
 
@@ -189,3 +189,20 @@
   - The merged extraction confidence is the deterministic maximum of source confidences. It remains extraction confidence only; `verification_status` remains `not_checked`.
   - Same-ID candidates whose frozen canonical fields disagree (statement, type, evidence refs including excerpts/coordinates/order, attribution, verification state, entities/topics, or run) are excluded from merged output and recorded as merge conflicts. The merger never silently selects one side.
   - `merged_knowledge_candidates.json` is an M4-03 intermediate artifact, not M4-05 `knowledge_units.json`. Its cache fingerprint hashes the complete M4-02 candidate artifact, merge policy version, and knowledge schema version.
+
+---
+
+## Decision 18: Surface-Grounded Entity & Topic Enrichment (M4-04)
+- **Context**: M4-02/03 leave `entities = []` and `topics = []` on every KnowledgeUnit. Attaching them must not corrupt frozen KU identity or verification state, and hallucinated entity expansion (e.g. `4090` → `NVIDIA GeForce RTX 4090`) would violate the grounding contract.
+- **Decision**:
+  - The LLM acts as an untrusted enrichment proposer and may only propose `entities` and `topics`, keyed by a batch-local `input_ref` routing key (`u001`, `u002`, ...). It never sees or controls `knowledge_unit_id`; the application maps `input_ref` back to the known CanonicalKnowledgeUnit deterministically.
+  - **Surface grounding is mandatory**: `entity_name` must have direct textual support (deterministic normalization: Unicode NFKC, casefold for English, whitespace collapse) inside the unit `statement` or any cited `EvidenceRef.source_excerpt`. Fuzzy matching, embedding similarity, LLM alias inference, and external knowledge completion are forbidden. `4090` is not accepted as `NVIDIA GeForce RTX 4090` unless the full surface appears in input text.
+  - **Bounded entity category vocabulary**: `person, organization, product, software, hardware, model, platform, technology, standard, location, document, inference_framework, hardware_platform, hardware_architecture, model_family, model_parameter, brand_text, text_mention, other`. Categories are classification labels only, not external fact assertions; unknown categories default to `other` and model-invented categories are rejected (`invalid_entity_category`).
+  - **In-unit dedup**: entities deduplicate by normalized `entity_name`, keeping first-appearance order. Cross-unit global entity identity is out of scope. `RTX 4090` and `4090` are never treated as the same entity.
+  - **Topic policy**: topics are derived classification labels, 0–5 per unit, 2–32 chars each, whitespace-collapsed, deduplicated, first-order preserved. They need not appear verbatim in evidence but must be grounded in the unit's statement+evidence, short, free of external facts, and never a full summary sentence. `topics = []` is always allowed.
+  - **Epistemic immutability**: enrichment never changes `verification_status` (stays `not_checked`) or `extraction_confidence`. Only `entities` and `topics` may differ after enrichment.
+  - **Failure isolation**: a bad proposal for one unit never drops that unit. The original KU (empty entities/topics) is preserved and the failure is recorded in the wrapper audit (`entity_not_grounded`, `invalid_entity_category`, `invalid_topic`, `malformed_proposal`, `unknown_input_ref`, `duplicate_input_ref`). Malformed batch responses mark the batch failed but never lose input units.
+  - **Enrichment is an intermediate stage**: output is `enriched_knowledge_candidates.json` (schema `m4-enriched-candidates-v1`), NOT the final `knowledge_units.json` (M4-05). Enrichment provenance and failure audit live on the artifact wrapper; the CanonicalKnowledgeUnit schema is not extended.
+  - **Deterministic cache**: the enrichment fingerprint hashes the merged-candidates content, exact ordered unit IDs, backend, model, base URL, prompt version, enrichment policy version, knowledge schema version, response schema, temperature, and generation config. Identical inputs/config → cache hit with 0 LLM calls; any input or config change invalidates.
+  - **Batching**: units are enriched in small batches (default 10), never one mechanical call per unit. The validator confirms every returned `input_ref` belongs to the batch and never relies on model response order.
+  - **Prompt injection defense**: `statement` and `source_excerpt` are untrusted source data; the system prompt declares that any embedded "ignore rules / change verification_status / output passwords" text is content to analyze, and the deterministic validator enforces that only `entities`/`topics` can ever be applied.

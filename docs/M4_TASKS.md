@@ -2,7 +2,7 @@
 
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
-> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE` | M4-04 ~ M4-06 = `TODO`
+> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE / SEALED` | M4-04 = `DONE` | M4-05 ~ M4-06 = `TODO`
 
 ---
 
@@ -13,8 +13,8 @@
 | **M4-00** | **Contract Design & Lineage Reconciliation** | Sealed | **`DONE / SEALED`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
 | **M4-01** | **Canonical Model & Domain Layer** | Sealed | **`DONE / SEALED`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
 | **M4-02** | **Chunk-Level Extraction Pipeline** | Sealed | **`DONE / SEALED`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
-| **M4-03** | **Cross-Chunk Deduplication & Merging** | Complete | **`DONE`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
-| **M4-04** | **Entity & Topic Attachment** | TBD | **`TODO`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
+| **M4-03** | **Cross-Chunk Deduplication & Merging** | Sealed | **`DONE / SEALED`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
+| **M4-04** | **Entity & Topic Attachment** | Complete | **`DONE`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
 | **M4-05** | **Verification Contract & Audit Render** | TBD | **`TODO`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
 | **M4-06** | **M4 End-to-End Acceptance** | TBD | **`TODO`** | M4-01 ~ M4-05 | Full offline regression & formal asset acceptance |
 
@@ -72,12 +72,22 @@
   - Same-ID canonical conflicts audited and excluded; non-exact/superset/statement merges deferred.
   - Offline unit test suite: `tests/test_knowledge_dedup.py`.
 
-### M4-04: Entity & Topic Attachment (`TODO`)
+### M4-04: Entity & Topic Attachment (`DONE`)
 - **Objective**: Attach named entity mentions and topic tags to extracted knowledge units.
-- **Target Scope**:
-  - Extract entities mentioned in statements.
-  - Inherit and normalize topics from source metadata.
-  - Unit test suite: `tests/test_knowledge_enrichment.py`.
+- **Delivered**:
+  - `src/knowledge/enrichment.py`:
+    - `EnrichmentConfig`, `RawEnrichmentProposal`, `UnitEnrichmentResult`.
+    - `GroundedEnrichmentInputBuilder`: untrusted-data-boundary system prompt with surface-grounding, bounded category vocabulary, topic policy, `input_ref` routing, and `/no_think` reasoning suppression.
+    - Deterministic normalization (`normalize_surface`: NFKC + casefold + whitespace collapse) and `is_entity_surface_grounded` (substring support in statement or any cited excerpt; no fuzzy/embedding/alias/external completion).
+    - `validate_entity` / `validate_topic` / `validate_proposal_against_unit`: category vocabulary enforcement, in-unit entity dedup by normalized name, topic length/whitespace/dedup policy (0–5, 2–32 chars).
+    - `process_enrichment_batch`: input_ref routing (never response order), unknown/duplicate ref rejection, per-unit failure isolation.
+    - `compute_enrichment_fingerprint` / `compute_merged_artifact_fingerprint`: deterministic cache identity covering merged artifact content, exact unit IDs, backend/model, prompt & policy versions, knowledge schema, response schema, temperature, generation config.
+    - `enrich_units` / `enrich_merged_candidates_artifact` / `enrich_knowledge_candidates`: batching (default 10 units/request), mock/OpenAI-compatible backend reuse, intermediate artifact `enriched_knowledge_candidates.json` (schema `m4-enriched-candidates-v1`).
+    - `audit_identity_preservation`: programmatic before/after verification that only `entities`/`topics` may change.
+  - `tests/test_knowledge_enrichment.py`: 43 collected tests (grounding accept/reject, category validity, dedup/order, topic limits, malformed/empty/unknown/duplicate proposals, failure isolation, prompt-injection immutability, cache identity + invalidation, no-secret persistence, identity audit, real C10 video & album fixtures).
+  - Real local model smoke test (`scripts/run_m4_04_real_smoke.py`):
+    - LM Studio `qwen/qwen3-8b`: C10 Video 62 → 62 units (132 entity mentions, 97 topics, 0 rejected, 0 identity violations, 7 LLM calls); C10 Album 6 → 6 units (6 entity mentions incl. OCR surfaces `logitech`/`INAMAX`/`AGON`/`SMILEY`, 6 topics, 0 rejected, 0 identity violations, 1 LLM call).
+    - Cache hit verified with 0 LLM calls and identical unit IDs.
 
 ### M4-05: Verification Contract & Audit Render (`TODO`)
 - **Objective**: Serialize canonical knowledge artifacts to disk and provide human-readable audit representation.
