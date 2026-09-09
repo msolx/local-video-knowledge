@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 `DONE`; M5-01 next)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`; M5-02 next)
 > **Status**: APPROVED / ACTIVE
 > **Context**: M4 is COMPLETE/SEALED (`knowledge_units.json` schema `knowledge-units-v1`). M5 builds a derived, rebuildable, queryable Knowledge Store with a lexical retrieval contract, offline and deterministic.
 

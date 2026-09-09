@@ -2,7 +2,7 @@
 
 > **Milestone Target**: A derived, rebuildable SQLite Knowledge Store over the canonical M4 `knowledge_units.json` artifacts, plus a stable lexical retrieval contract with full evidence expansion. Offline and deterministic; no LLM, no embeddings.
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
-> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `TODO` | M5-02 = `TODO` | M5-03 = `TODO` | M5-04 = `TODO` | M5-05 = `TODO` | M5-06 = `TODO`
+> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `TODO` | M5-03 = `TODO` | M5-04 = `TODO` | M5-05 = `TODO` | M5-06 = `TODO`
 
 ---
 
@@ -11,7 +11,7 @@
 | Task ID | Task Title | Owner | Status | Dependencies | Target Deliverable |
 | :--- | :--- | :---: | :---: | :--- | :--- |
 | **M5-00** | **Contract Design** | Sealed | **`DONE / SEALED`** | M4 Acceptance | `docs/M5_*.md` (Design & Contract Freeze) |
-| **M5-01** | **Canonical Knowledge Store & Idempotent Ingestion** | — | **`TODO`** | M5-00 | `src/knowledge/store.py`, `tests/test_knowledge_store.py` |
+| **M5-01** | **Canonical Knowledge Store & Idempotent Ingestion** | Complete | **`DONE`** | M5-00 | `src/knowledge/store.py`, `tests/test_knowledge_store.py` |
 | **M5-02** | **SQLite FTS5 Lexical / Metadata Indexing** | — | **`TODO`** | M5-01 | `src/knowledge/indexing.py`, `tests/test_knowledge_indexing.py` |
 | **M5-03** | **Retrieval API & Evidence Expansion** | — | **`TODO`** | M5-01, M5-02 | `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py` |
 | **M5-04** | **Filtering, Ranking & Query Diagnostics** | — | **`TODO`** | M5-03 | `src/knowledge/retrieval.py` (filter/rank layer), `tests/test_knowledge_retrieval_filters.py` |
@@ -30,15 +30,26 @@
   - `docs/M5_DECISIONS.md`: Architectural decisions log (Decisions 1-20).
   - `docs/M5_TASKS.md`: Task board and progression matrix.
 
-### M5-01: Canonical Knowledge Store & Idempotent Ingestion (`TODO`)
+### M5-01: Canonical Knowledge Store & Idempotent Ingestion (`DONE`)
 - **Objective**: Implement the SQLite `knowledge-store-v1` schema and the atomic, idempotent ingestion pipeline over M4 `knowledge_units.json` artifacts.
-- **Target Scope**:
-  - `src/knowledge/store.py`: `create_store`, `validate_store`, `rebuild_store`, `ingest_knowledge_document`, `remove_asset`, store path `data/knowledge/knowledge_store.sqlite3`.
-  - Tables: `store_meta`, `ingested_assets`, `knowledge_units`, `evidence_refs`, `entities`, `topics`; `canonical_payload_json` single-truth rule.
-  - Atomic `BEGIN IMMEDIATE` asset transactions; failure → ROLLBACK, no partial asset.
-  - Idempotency (same fingerprint → NO-OP) and deterministic replace (changed fingerprint → delete + re-insert same transaction).
-  - Deletion semantics (derived rows only) and fail-fast rebuild.
-- **Deliverable**: `src/knowledge/store.py`, `tests/test_knowledge_store.py`.
+- **Delivered**:
+  - `src/knowledge/store.py`:
+    - Schema `knowledge-store-v1` via `PRAGMA user_version = 1` + `store_meta`; `create_store`, `open_store`, `validate_store`; incompatible schema → explicit `StoreSchemaError` (create/validate/rebuild only, no silent migration).
+    - Tables: `store_meta`, `ingested_assets`, `knowledge_units` (with verbatim `canonical_payload_json`), `evidence_refs` (ordinal + temporal/sequence coordinates), `entities`, `topics`; FK `ON DELETE CASCADE`, `PRAGMA foreign_keys = ON`.
+    - Single-truth rule: all projection columns derived deterministically from `canonical_payload_json`; `validate_store` verifies projection-vs-payload consistency and fails loudly on divergence.
+    - `ingest_knowledge_document(db_path, knowledge_units_path)`: reads + parses + domain-validates via `CanonicalKnowledgeUnitsDocument.from_dict`, then persists one asset in a single `BEGIN IMMEDIATE ... COMMIT`; failure → `ROLLBACK`, no half-asset.
+    - Idempotency: same `canonical_id` + same fingerprint → `IngestResult(status="unchanged")`, no row touched, `ingested_at` preserved. Changed fingerprint → deterministic replace (`status="replaced"`) inside one transaction; stale units/evidence/entities/topics fully removed.
+    - `source_artifact_fingerprint` = canonical SHA-256 JSON of the real `knowledge_units.json` (project convention, never fabricated).
+    - `remove_asset(canonical_id)`: deletes only derived store rows (FK cascade); missing asset → deterministic `removed=False`; never touches source artifacts.
+    - Deterministic store revision: SHA-256 over sorted `(canonical_id, source_artifact_fingerprint)` pairs; independent of `ingested_at`/rowids/time.
+    - `rebuild_store`: fail-fast discovery of `data/processed/*/knowledge/knowledge_units.json` only (intermediate candidates never consumed); builds into a temp DB, validates, then atomically replaces the official DB — a failed rebuild preserves the old store.
+    - Minimal deterministic read API: `get_unit`, `list_units_for_asset`, `get_ingested_asset`, `list_ingested_assets` (round-trip verification; NOT retrieval).
+    - No FTS5, no search, no RetrievalQuery/Hit/Result, no ranking/filters, no LLM, no embeddings.
+  - `tests/test_knowledge_store.py`: 47 collected tests covering create/version/tables/incompatible-schema rejection, ingest validity + rejection, asset metadata, canonical payload storage, evidence/entity/topic order round-trips, attribution/lineage round-trips, full semantic round-trip, idempotency (no-op, ingested_at preserved, no duplicate rows), changed-fingerprint replace, stale-row removal, rollback-preserves-old-version (simulated mid-transaction failure), remove asset + nonexistent + source-file untouched, FK integrity, orphan detection, projection consistency + corruption detection, unit-count invariant, invalid-ordinal detection, validation report, parameterized/quote safety, unicode/multiline/coordinate round-trips, zero-unit document, multiple assets, same-KU stability, rebuild discovery (final artifacts only), rebuild invalid fail-fast, rebuild failure preserves old store, rebuild success, and real C10 video/album/combined ingestion.
+  - Real C10 ingestion (temp/test DB only, M4 artifacts untouched):
+    - Video `douyin_7681603850364521734`: 62 units ingested; album `douyin_7682038498466993905`: 6 units ingested; combined 2 assets / 68 units / 150 evidence refs / 138 entities / 103 topics; store validation valid.
+    - Second identical ingest → `unchanged` (cache hit), row counts byte-identical.
+  - Full regression: **1033 passed, 10 skipped** (M4 baseline 986 + 47 new store tests; zero regressions).
 
 ### M5-02: SQLite FTS5 Lexical / Metadata Indexing (`TODO`)
 - **Objective**: Add the weighted FTS5 lexical index and keep it atomically in sync with structured rows.

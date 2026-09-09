@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `TODO`, M5-02 ~ M5-06 = `TODO`)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `TODO`, M5-03 ~ M5-06 = `TODO`)
 > **Source Baseline**: Milestone M4 Sealed at Tag `m4-unified-knowledge-model-complete` (`92775b9ad862bc179f041c8ad56c2ee1c1bd8e49`).
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
 
@@ -25,6 +25,34 @@ embeddings, no reranker. Retrieval returns hits, never answers.
 - `docs/M5_DECISIONS.md`: Decisions 1-20.
 - `docs/M5_TASKS.md`: frozen task tree M5-00 ~ M5-06.
 - `docs/M5_HANDOFF.md`: this protocol.
+
+### M5-01 Deliverables Completed:
+- `src/knowledge/store.py`: SQLite `knowledge-store-v1` canonical knowledge store.
+  - `create_store` / `open_store` / `validate_store`; `PRAGMA user_version=1` +
+    `store_meta`; incompatible schema → `StoreSchemaError` (no silent migration).
+  - Tables `store_meta`, `ingested_assets`, `knowledge_units`,
+    `evidence_refs`, `entities`, `topics` (FK `ON DELETE CASCADE`,
+    `PRAGMA foreign_keys=ON`).
+  - `ingest_knowledge_document(db_path, knowledge_units_path)`: parse +
+    domain-validate via `CanonicalKnowledgeUnitsDocument.from_dict`, then one
+    atomic `BEGIN IMMEDIATE ... COMMIT` per asset; failure → ROLLBACK.
+  - Idempotency (`unchanged` / cache hit, `ingested_at` preserved) and
+    deterministic replace (`replaced`) inside one transaction.
+  - `remove_asset`, `compute_store_revision`, `rebuild_store` (temp-DB + atomic
+    replace, fail-fast), minimal read API (`get_unit`,
+    `list_units_for_asset`, `get_ingested_asset`, `list_ingested_assets`).
+  - No FTS5 / search / ranking / filters / LLM / embeddings.
+- `tests/test_knowledge_store.py`: 47 tests (create/version/tables/schema
+  rejection, ingest validity, round-trips, idempotency, replace, rollback
+  isolation, removal, FK/orphan/projection/ordinal validation, parameterized
+  safety, unicode/multiline/coordinates, zero-unit, multi-asset, rebuild, real
+  C10 video+album).
+- Real C10 ingestion (temp/test DB; M4 artifacts untouched):
+  - Video 62 units, Album 6 units → 2 assets / 68 units / 150 evidence refs /
+    138 entities / 103 topics; validation valid.
+  - Second identical ingest → `unchanged`, row counts identical.
+- Targeted suite: 83 passed (36 models + 47 store). Full regression:
+  **1033 passed, 10 skipped** (M4 baseline 986 + 47 new; zero regressions).
 
 ---
 
@@ -113,10 +141,15 @@ embeddings, no reranker. Retrieval returns hits, never answers.
   `92775b9ad862bc179f041c8ad56c2ee1c1bd8e49`).
 - **M5-00 Additions**: `docs/M5_KNOWLEDGE_STORE_DESIGN.md`,
   `docs/M5_DECISIONS.md`, `docs/M5_TASKS.md`, `docs/M5_HANDOFF.md`.
-- **Zero production code modified**: `src/`, `tests/`, `config/` untouched in
-  M5-00. No database created, no ingestion run.
-- **No LLM/runtime involved**: M5-00 (and all of M5) is inference-free; must
-  not start or probe LM Studio or llama.cpp, and must not scan `D:\LMmodel`.
+- **M5-01 Additions**: `src/knowledge/store.py`,
+  `tests/test_knowledge_store.py`; `src/knowledge/__init__.py` extended with
+  M5-01 exports.
+- **Zero M4 code modified**: `models.py`, `extractor.py`, `merger.py`,
+  `enrichment.py`, `render.py` untouched. No FTS5, no search, no LLM, no
+  runtime started or probed.
+- **No production DB written**: all M5-01 ingestion/validation ran on temp/test
+  SQLite DBs. The official `data/knowledge/knowledge_store.sqlite3` will be
+  built at milestone acceptance (M5-06) or a later explicit step.
 
 ### Operator Note: Local LLM Runtime Preference (carried from M4)
 
@@ -134,16 +167,18 @@ not require any runtime.
 
 ## 5. NEXT_AGENT_START_HERE
 
-- **Task**: `M5-01 · Canonical Knowledge Store & Idempotent Ingestion`
-- **Objective**: Implement the `knowledge-store-v1` SQLite schema
-  (`src/knowledge/store.py`) and the atomic, idempotent ingestion pipeline over
-  M4 `knowledge_units.json` artifacts, per `docs/M5_KNOWLEDGE_STORE_DESIGN.md`
-  §6–§10 and `docs/M5_DECISIONS.md` Decisions 1–10.
-- **Do not begin M5-02** (FTS5 indexing), M5-03 (retrieval API), or later tasks.
+- **Task**: `M5-02 · SQLite FTS5 Lexical / Metadata Indexing`
+- **Objective**: Add the weighted FTS5 lexical index over `statement`,
+  `entity_names`, `topics`, `evidence_excerpts` (Option B′: independent weighted
+  columns, external-content FTS5 with `content_rowid='unit_rowid'`, `unicode61`
+  tokenizer, explicit `bm25()` column weights), and keep it atomically in sync
+  with structured rows inside the ingestion transaction. Per
+  `docs/M5_KNOWLEDGE_STORE_DESIGN.md` §11, §17 and `docs/M5_DECISIONS.md`
+  Decisions 11, 18.
+- **Do not begin M5-03** (retrieval API), M5-04, or later tasks.
 - **Hard constraints**:
-  - Canonical M4 artifacts are read-only. The store is derived and rebuildable.
-  - One asset = one transaction; failure → ROLLBACK; idempotent NO-OP on same
-    fingerprint; deterministic replace on changed fingerprint.
-  - `remove_asset` deletes only derived rows.
-  - No LLM, no embeddings, no runtime probing.
-  - Commit message: `feat(m5): add canonical knowledge store and idempotent ingestion`.
+  - M5-01 `src/knowledge/store.py` is the ingestion base; the FTS index update
+    must live in the same transaction (rows and index never diverge).
+  - M4 canonical artifacts remain read-only. No LLM, no embeddings, no runtime
+    probing.
+  - Commit message: `feat(m5): add sqlite fts5 lexical indexing`.
