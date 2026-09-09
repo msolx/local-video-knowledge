@@ -127,8 +127,6 @@ class EvidenceRef:
             raise ValueError("evidence_id must be a non-empty string")
         if not isinstance(self.source_excerpt, str):
             raise ValueError("source_excerpt must be a string")
-        if self.temporal_range is not None and self.sequence_range is not None:
-            raise ValueError("EvidenceRef cannot have both temporal_range and sequence_range")
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -307,6 +307,59 @@ def test_16_sequence_range_serialization():
     assert sr_rt.sequence_index == 2
 
 
+def test_16b_evidenceref_multidimensional_coordinates():
+    # Case A: temporal only (e.g. ASR speech)
+    case_a = EvidenceRef(
+        evidence_id="ev_speech_01",
+        source_excerpt="speech excerpt",
+        temporal_range=TemporalRange(start=10.0, end=15.0, duration=5.0),
+        sequence_range=None,
+    )
+    d_a = case_a.to_dict()
+    assert d_a["temporal_range"] == {"start": 10.0, "end": 15.0, "duration": 5.0}
+    assert d_a["sequence_range"] is None
+    assert EvidenceRef.from_dict(d_a) == case_a
+
+    # Case B: sequence only (e.g. image album OCR)
+    case_b = EvidenceRef(
+        evidence_id="ev_album_01",
+        source_excerpt="album excerpt",
+        temporal_range=None,
+        sequence_range=SequenceRange(sequence_index=3),
+    )
+    d_b = case_b.to_dict()
+    assert d_b["temporal_range"] is None
+    assert d_b["sequence_range"] == {"sequence_index": 3}
+    assert EvidenceRef.from_dict(d_b) == case_b
+
+    # Case C: neither coordinate (e.g. web/forum/document evidence)
+    case_c = EvidenceRef(
+        evidence_id="ev_doc_01",
+        source_excerpt="doc excerpt",
+        temporal_range=None,
+        sequence_range=None,
+    )
+    d_c = case_c.to_dict()
+    assert d_c["temporal_range"] is None
+    assert d_c["sequence_range"] is None
+    assert EvidenceRef.from_dict(d_c) == case_c
+
+    # Case D: both coordinates simultaneously (e.g. video frame OCR, video VLM sample)
+    case_d = EvidenceRef(
+        evidence_id="ev_video_frame_01",
+        source_excerpt="frame text",
+        temporal_range=TemporalRange(start=101.58, end=104.12, duration=2.54),
+        sequence_range=SequenceRange(sequence_index=42),
+    )
+    d_d = case_d.to_dict()
+    assert d_d["temporal_range"] == {"start": 101.58, "end": 104.12, "duration": 2.54}
+    assert d_d["sequence_range"] == {"sequence_index": 42}
+    rt_d = EvidenceRef.from_dict(d_d)
+    assert rt_d == case_d
+    assert rt_d.temporal_range.start == 101.58
+    assert rt_d.sequence_range.sequence_index == 42
+
+
 # ----------------------------------------------------------------------
 # 5. Deterministic KnowledgeUnit ID Invariants
 # ----------------------------------------------------------------------
