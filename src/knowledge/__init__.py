@@ -33,10 +33,15 @@ from .extractor import (
     GroundedChunkInputBuilder,
     CandidateValidator,
     EvidenceResolver,
+    resolve_semantic_excerpt,
+    is_usable_perceptual_evidence,
+    compute_raw_response_sha256,
+    compute_extraction_config_fingerprint,
     compute_extraction_run_id,
     compute_chunk_extraction_fingerprint,
     extract_chunk_candidates,
     extract_knowledge_candidates,
+    revalidate_knowledge_candidates_from_raw,
 )
 
 __all__ = [
@@ -78,9 +83,14 @@ __all__ = [
     "GroundedChunkInputBuilder",
     "CandidateValidator",
     "EvidenceResolver",
+    "resolve_semantic_excerpt",
+    "is_usable_perceptual_evidence",
+    "compute_raw_response_sha256",
+    "compute_extraction_config_fingerprint",
     "compute_extraction_run_id",
     "compute_chunk_extraction_fingerprint",
     "extract_chunk_candidates",
     "extract_knowledge_candidates",
+    "revalidate_knowledge_candidates_from_raw",
 ]
 

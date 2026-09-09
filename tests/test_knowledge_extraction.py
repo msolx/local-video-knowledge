@@ -29,10 +29,15 @@ from src.knowledge.extractor import (
     GroundedChunkInputBuilder,
     CandidateValidator,
     EvidenceResolver,
+    resolve_semantic_excerpt,
+    is_usable_perceptual_evidence,
+    compute_raw_response_sha256,
+    compute_extraction_config_fingerprint,
     compute_extraction_run_id,
     compute_chunk_extraction_fingerprint,
     extract_chunk_candidates,
     extract_knowledge_candidates,
+    revalidate_knowledge_candidates_from_raw,
     parse_json_safely,
 )
 
@@ -966,3 +971,279 @@ def test_46_real_c10_album_fixture_structure():
     prompt = builder.build_user_prompt(chunks_doc["chunks"][0], manifest_index)
     assert "status: unresolved_visual_reference" in prompt
     assert "text: null" in prompt
+
+
+# ----------------------------------------------------------------------
+# M4-02 final grounding and lineage reconciliation
+# ----------------------------------------------------------------------
+
+def _validate_one(
+    manifest: dict[str, Any],
+    evidence_id: str,
+    unit_type: str = "claim",
+    extra_evidence_ids: list[str] | None = None,
+):
+    evidence_ids = [evidence_id, *(extra_evidence_ids or [])]
+    chunk = {"chunk_id": "chk_gate", "evidence_ids": evidence_ids}
+    return CandidateValidator(chunk, {
+        item["evidence_id"]: item for item in manifest["evidence_items"]
+    }).validate_candidate({
+        "unit_type": unit_type,
+        "statement": "grounded candidate",
+        "evidence_ids": evidence_ids,
+    })
+
+
+def _write_asset(
+    root: Path,
+    manifest: dict[str, Any],
+    chunks: list[dict[str, Any]],
+) -> Path:
+    root.mkdir(parents=True)
+    (root / "evidence_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    (root / "evidence_chunks.json").write_text(
+        json.dumps({"fingerprint": "chunks_fp", "chunks": chunks}),
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_47_semantic_excerpt_accepts_nonempty_visual_text_and_description():
+    ocr = {"modality": "visual_text", "payload": {"text": "OCR text"}}
+    description = {
+        "modality": "visual_description",
+        "payload": {"status": "resolved", "description": "visible object"},
+    }
+    assert resolve_semantic_excerpt(ocr) == "OCR text"
+    assert resolve_semantic_excerpt(description) == "visible object"
+    assert is_usable_perceptual_evidence(ocr)
+    assert is_usable_perceptual_evidence(description)
+
+
+@pytest.mark.parametrize("payload", [
+    {"text": ""},
+    {"text": "   \t\n"},
+    {"text": None},
+])
+def test_48_empty_whitespace_or_null_visual_text_rejected(payload):
+    manifest = {"evidence_items": [{
+        "evidence_id": "ve_empty", "modality": "visual_text", "payload": payload,
+    }]}
+    validated, rejection = _validate_one(manifest, "ve_empty")
+    assert validated is None
+    assert rejection.reason == "evidence_has_no_usable_semantic_payload"
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "unresolved_visual_reference", "description": "model guess"},
+    {"status": "resolved", "description": None},
+    {"status": "resolved", "description": "  "},
+])
+def test_49_unresolved_null_or_whitespace_visual_description_rejected(payload):
+    manifest = {"evidence_items": [{
+        "evidence_id": "ve_desc", "modality": "visual_description", "payload": payload,
+    }]}
+    validated, rejection = _validate_one(manifest, "ve_desc")
+    assert validated is None
+    assert rejection.reason == "evidence_has_no_usable_semantic_payload"
+
+
+@pytest.mark.parametrize("unit_type", [
+    "claim", "opinion", "procedure_step", "verification_question",
+])
+def test_50_all_non_observation_types_reject_empty_evidence(unit_type):
+    manifest = {"evidence_items": [{
+        "evidence_id": "ev_empty", "modality": "speech", "payload": {"text": ""},
+    }]}
+    validated, rejection = _validate_one(manifest, "ev_empty", unit_type)
+    assert validated is None
+    assert rejection.reason == "evidence_has_no_usable_semantic_payload"
+
+
+@pytest.mark.parametrize("item", [
+    {"evidence_id": "ve_empty", "modality": "visual_text", "payload": {"text": ""}},
+    {"evidence_id": "ve_unresolved", "modality": "visual_description", "payload": {
+        "status": "unresolved_visual_reference", "description": None,
+    }},
+])
+def test_51_observation_rejects_empty_or_unresolved_visual(item):
+    manifest = {"evidence_items": [item]}
+    validated, rejection = _validate_one(manifest, item["evidence_id"], "observation")
+    assert validated is None
+    assert rejection.reason == "evidence_has_no_usable_semantic_payload"
+
+
+def test_52_observation_accepts_valid_visual_but_rejects_speech_visual_mix(sample_manifest):
+    validated, rejection = _validate_one(sample_manifest, "ve_ocr_000001", "observation")
+    assert rejection is None
+    assert validated is not None
+
+    validated, rejection = _validate_one(
+        sample_manifest,
+        "ev_seg_000001",
+        "observation",
+        ["ve_ocr_000001"],
+    )
+    assert validated is None
+    assert rejection.reason == "observation_without_perceptual_evidence"
+
+
+def test_53_accepted_source_excerpt_is_nonempty_and_system_copied(sample_manifest):
+    chunk = {"chunk_id": "chk_one", "evidence_ids": ["ve_vlm_000001"]}
+    backend = MockLLMBackend({"candidates": [{
+        "unit_type": "claim",
+        "statement": "a visible object is described",
+        "evidence_ids": ["ve_vlm_000001"],
+    }]})
+    result = extract_chunk_candidates(
+        chunk, sample_manifest, "test_video_123", sample_manifest["source"],
+        ExtractionConfig(), backend, "run_test",
+    )
+    excerpt = result.candidates[0].evidence_refs[0].source_excerpt
+    assert excerpt == sample_manifest["evidence_items"][4]["payload"]["description"]
+    assert excerpt.strip()
+
+
+def test_54_cache_fingerprint_changes_with_knowledge_schema_version():
+    config = ExtractionConfig()
+    fp1 = compute_chunk_extraction_fingerprint(
+        "manifest", "chunks", "chk", ["ev"], config,
+        knowledge_schema_version="knowledge-units-v1",
+    )
+    fp2 = compute_chunk_extraction_fingerprint(
+        "manifest", "chunks", "chk", ["ev"], config,
+        knowledge_schema_version="knowledge-units-v2",
+    )
+    assert fp1 != fp2
+
+
+def test_55_run_id_is_content_addressed_and_generated_at_independent():
+    config_fp = compute_extraction_config_fingerprint("manifest", "chunks", ExtractionConfig())
+    raw_a = compute_raw_response_sha256({"candidates": []})
+    raw_b = compute_raw_response_sha256({"candidates": [{"statement": "changed"}]})
+    run1 = compute_extraction_run_id(config_fp, [("chk_1", raw_a)])
+    run2 = compute_extraction_run_id(config_fp, [("chk_1", raw_a)])
+    run3 = compute_extraction_run_id(config_fp, [("chk_1", raw_b)])
+    assert run1 == run2
+    assert run1 != run3
+    # generated_at is intentionally absent from both inputs and cannot affect identity.
+
+
+def test_56_cache_hit_preserves_asset_run_id_and_common_cross_chunk_lineage(
+    tmp_path, sample_manifest, sample_chunk_1, sample_chunk_2,
+):
+    proc_dir = _write_asset(
+        tmp_path / "test_video_123", sample_manifest, [sample_chunk_1, sample_chunk_2]
+    )
+    responses = [
+        {"candidates": [{
+            "unit_type": "claim", "statement": "chunk one",
+            "evidence_ids": ["ev_seg_000001"],
+        }]},
+        {"candidates": [{
+            "unit_type": "claim", "statement": "chunk two",
+            "evidence_ids": ["ev_seg_000003"],
+        }]},
+    ]
+    backend = MockLLMBackend(responses)
+    config = ExtractionConfig()
+    first = extract_knowledge_candidates(proc_dir, config, backend)
+    second = extract_knowledge_candidates(proc_dir, config, backend)
+    assert first["extraction_run_id"] == second["extraction_run_id"]
+    assert len(backend.call_history) == 2
+    assert all(summary["cache_hit"] for summary in second["chunk_summaries"])
+    run_ids = {
+        candidate["extraction_lineage"]["extraction_run_id"]
+        for candidate in first["candidates"]
+    }
+    assert run_ids == {first["extraction_run_id"]}
+
+
+def test_57_force_same_raw_keeps_run_id_changed_raw_changes_it(
+    tmp_path, sample_manifest, sample_chunk_1,
+):
+    proc_dir = _write_asset(tmp_path / "test_video_123", sample_manifest, [sample_chunk_1])
+    raw1 = {"candidates": [{
+        "unit_type": "claim", "statement": "same output",
+        "evidence_ids": ["ev_seg_000001"],
+    }]}
+    first = extract_knowledge_candidates(
+        proc_dir, ExtractionConfig(force=True), MockLLMBackend(raw1)
+    )
+    same = extract_knowledge_candidates(
+        proc_dir, ExtractionConfig(force=True), MockLLMBackend(raw1)
+    )
+    changed_raw = {"candidates": [{
+        "unit_type": "claim", "statement": "changed output",
+        "evidence_ids": ["ev_seg_000001"],
+    }]}
+    changed = extract_knowledge_candidates(
+        proc_dir, ExtractionConfig(force=True), MockLLMBackend(changed_raw)
+    )
+    assert first["extraction_run_id"] == same["extraction_run_id"]
+    assert first["extraction_run_id"] != changed["extraction_run_id"]
+
+
+def test_58_raw_hash_and_auditable_config_persist_without_secret(
+    tmp_path, sample_manifest, sample_chunk_1,
+):
+    proc_dir = _write_asset(tmp_path / "test_video_123", sample_manifest, [sample_chunk_1])
+    raw = {"candidates": []}
+    config = ExtractionConfig(api_key_env="TOP_SECRET_ENV")
+    extract_knowledge_candidates(proc_dir, config, MockLLMBackend(raw))
+    persisted = json.loads(
+        (proc_dir / "knowledge/raw_extractions/chk_000001.json").read_text(encoding="utf-8")
+    )
+    assert persisted["raw_response_sha256"] == compute_raw_response_sha256(raw)
+    assert persisted["cache_fingerprint"] == persisted["extraction_fingerprint"]
+    assert persisted["knowledge_schema_version"] == KNOWLEDGE_SCHEMA_VERSION
+    assert persisted["backend"] == config.backend
+    assert persisted["model"] == config.model
+    serialized = json.dumps(persisted)
+    assert "TOP_SECRET_ENV" not in serialized
+    assert "api_key" not in serialized
+
+
+def test_59_revalidation_uses_raw_without_backend_call(
+    tmp_path, sample_manifest, sample_chunk_1,
+):
+    proc_dir = _write_asset(tmp_path / "test_video_123", sample_manifest, [sample_chunk_1])
+    raw = {"candidates": [{
+        "unit_type": "claim", "statement": "cached proposal",
+        "evidence_ids": ["ev_seg_000001"],
+    }]}
+    raw_dir = proc_dir / "knowledge/raw_extractions"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "chk_000001.json").write_text(
+        json.dumps({"raw_response": raw, "generated_at": "2026-09-09T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    result = revalidate_knowledge_candidates_from_raw(proc_dir, ExtractionConfig())
+    assert result["total_accepted_candidates"] == 1
+    assert result["chunk_summaries"][0]["status"] == "revalidated"
+
+
+@pytest.mark.parametrize("field", [
+    "extraction_run_id",
+    "input_chunk_ids",
+    "candidate_id",
+    "source_candidate_ids",
+    "merge_strategy",
+])
+def test_60_model_cannot_set_individual_lineage_fields(
+    field, sample_manifest, sample_chunk_1,
+):
+    raw = {
+        "unit_type": "claim",
+        "statement": "lineage remains system owned",
+        "evidence_ids": ["ev_seg_000001"],
+        field: "model-controlled",
+    }
+    validated, rejection = CandidateValidator(
+        sample_chunk_1,
+        {item["evidence_id"]: item for item in sample_manifest["evidence_items"]},
+    ).validate_candidate(raw)
+    assert validated is None
+    assert rejection.reason == "forbidden_canonical_fields_present"

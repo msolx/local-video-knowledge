@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 from pathlib import Path
@@ -33,6 +33,7 @@ from ..backends.openai_compatible import chat_completion
 
 EXTRACTION_PROMPT_VERSION = "m4-extraction-v1.0"
 EXTRACTION_SCHEMA_VERSION = "m4-candidates-v1"
+EXTRACTION_PROMPT_TEMPLATE_VERSION = "m4-extraction-template-v1.1"
 
 PERCEPTUAL_MODALITIES = frozenset({
     "visual_text",
@@ -62,6 +63,11 @@ FORBIDDEN_RAW_FIELDS = frozenset({
     "verification_status",
     "lineage",
     "extraction_lineage",
+    "extraction_run_id",
+    "input_chunk_ids",
+    "candidate_id",
+    "source_candidate_ids",
+    "merge_strategy",
     "entities",
     "topics",
 })
@@ -141,6 +147,14 @@ class ChunkExtractionResult:
     raw_response: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     extraction_fingerprint: str = ""
+    raw_response_sha256: str = ""
+    generated_at: str = ""
+    backend: str = ""
+    model: str = ""
+    prompt_version: str = ""
+    knowledge_schema_version: str = KNOWLEDGE_SCHEMA_VERSION
+    temperature: float = 0.0
+    max_tokens: int = 0
     cache_hit: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -149,6 +163,15 @@ class ChunkExtractionResult:
             "status": self.status,
             "cache_hit": self.cache_hit,
             "extraction_fingerprint": self.extraction_fingerprint,
+            "cache_fingerprint": self.extraction_fingerprint,
+            "raw_response_sha256": self.raw_response_sha256,
+            "generated_at": self.generated_at,
+            "backend": self.backend,
+            "model": self.model,
+            "prompt_version": self.prompt_version,
+            "knowledge_schema_version": self.knowledge_schema_version,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
             "accepted_count": len(self.candidates),
             "rejected_count": len(self.rejections),
             "candidates": [c.to_dict() for c in self.candidates],
@@ -384,6 +407,45 @@ class GroundedChunkInputBuilder:
 # Candidate Validator & Evidence Resolver
 # ----------------------------------------------------------------------
 
+def resolve_semantic_excerpt(evidence_item: dict[str, Any]) -> Optional[str]:
+    """Return authoritative semantic text, or None when none is citable.
+
+    Evidence identity and chunk membership are necessary but not sufficient for
+    semantic grounding. Values are never inferred from metadata or coerced from
+    non-string payloads.
+    """
+    payload = evidence_item.get("payload")
+    if not isinstance(payload, dict):
+        return None
+
+    modality = evidence_item.get("modality")
+    value: Any = None
+    if modality in {"speech", "visual_text"}:
+        value = payload.get("text")
+    elif modality == "visual_description":
+        if payload.get("status") == "unresolved_visual_reference":
+            return None
+        value = payload.get("description")
+        if not isinstance(value, str) or not value.strip():
+            value = payload.get("text")
+    else:
+        value = payload.get("text")
+        if not isinstance(value, str) or not value.strip():
+            value = payload.get("description")
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+def is_usable_perceptual_evidence(evidence_item: dict[str, Any]) -> bool:
+    """Whether an item is direct perceptual evidence with citable semantics."""
+    return (
+        evidence_item.get("modality") in PERCEPTUAL_MODALITIES
+        and resolve_semantic_excerpt(evidence_item) is not None
+    )
+
+
 class CandidateValidator:
     """Validates raw candidate proposals against domain invariants and chunk boundaries."""
 
@@ -486,19 +548,34 @@ class CandidateValidator:
                 details={"outside_ids": outside_ids, "chunk_id": self.chunk_id},
             )
 
-        # Observation validation gate: must have direct perceptual evidence
-        if unit_type_str == "observation":
-            has_perceptual = any(
-                self.manifest_index[e].get("modality") in PERCEPTUAL_MODALITIES
-                for e in eids
+        # Every citation must carry usable semantic grounding. A valid ID for
+        # empty OCR or unresolved VLM evidence cannot authorize model text.
+        unusable_ids = [
+            eid for eid in eids
+            if resolve_semantic_excerpt(self.manifest_index[eid]) is None
+        ]
+        if unusable_ids:
+            return None, CandidateRejection(
+                raw_candidate=raw,
+                reason="evidence_has_no_usable_semantic_payload",
+                details={"evidence_ids": unusable_ids},
             )
-            if not has_perceptual:
+
+        # Every observation citation must itself be usable perceptual evidence;
+        # speech cannot be mixed in as observation grounding.
+        if unit_type_str == "observation":
+            non_perceptual_ids = [
+                eid for eid in eids
+                if not is_usable_perceptual_evidence(self.manifest_index[eid])
+            ]
+            if non_perceptual_ids:
                 return None, CandidateRejection(
                     raw_candidate=raw,
                     reason="observation_without_perceptual_evidence",
                     details={
                         "modalities": [self.manifest_index[e].get("modality") for e in eids],
                         "evidence_ids": eids,
+                        "non_perceptual_evidence_ids": non_perceptual_ids,
                     },
                 )
 
@@ -529,19 +606,11 @@ class EvidenceResolver:
         refs: list[EvidenceRef] = []
         for eid in evidence_ids:
             item = self.manifest_index[eid]
-            payload = item.get("payload", {})
-            modality = item.get("modality", "")
 
             # System-copied source excerpt
-            if modality == "speech":
-                excerpt = str(payload.get("text", ""))
-            elif modality == "visual_text":
-                excerpt = str(payload.get("text", ""))
-            elif modality == "visual_description":
-                desc = payload.get("description")
-                excerpt = str(desc) if desc else ""
-            else:
-                excerpt = str(payload.get("text") or payload.get("description") or "")
+            excerpt = resolve_semantic_excerpt(item)
+            if excerpt is None:
+                raise ValueError(f"Evidence '{eid}' has no usable semantic payload")
 
             # System-copied coordinates
             tr = None
@@ -568,14 +637,56 @@ class EvidenceResolver:
 # Lineage & Identity Computation
 # ----------------------------------------------------------------------
 
-def compute_extraction_run_id(
+def _sha256_json(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def compute_raw_response_sha256(raw_response: dict[str, Any]) -> str:
+    """Content hash of the canonical JSON representation of a raw response."""
+    return _sha256_json(raw_response)
+
+
+def compute_extraction_config_fingerprint(
     manifest_fingerprint: str,
     chunks_fingerprint: str,
     config: ExtractionConfig,
+    *,
+    knowledge_schema_version: str = KNOWLEDGE_SCHEMA_VERSION,
 ) -> str:
-    """Deterministically computes extraction_run_id from input fingerprints and config."""
-    seed = f"{manifest_fingerprint}|{chunks_fingerprint}|{config.backend}|{config.model}|{config.prompt_version}|{config.temperature:.2f}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    """Fingerprint asset inputs and all output-affecting generation config."""
+    material = {
+        "evidence_manifest_fingerprint": manifest_fingerprint,
+        "evidence_chunks_fingerprint": chunks_fingerprint,
+        "backend": config.backend,
+        "model": config.model,
+        "base_url": config.base_url,
+        "prompt_version": config.prompt_version,
+        "prompt_template_version": EXTRACTION_PROMPT_TEMPLATE_VERSION,
+        "extraction_schema_version": EXTRACTION_SCHEMA_VERSION,
+        "response_schema_sha256": _sha256_json(RAW_CANDIDATES_JSON_SCHEMA),
+        "knowledge_schema_version": knowledge_schema_version,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+    }
+    return _sha256_json(material)
+
+
+def compute_extraction_run_id(
+    config_fingerprint: str,
+    chunk_raw_response_hashes: Sequence[tuple[str, str]],
+) -> str:
+    """Content-address an asset extraction generation in canonical chunk order."""
+    material = {
+        "config_fingerprint": config_fingerprint,
+        "chunk_raw_response_hashes": [
+            {"chunk_id": chunk_id, "raw_response_sha256": raw_hash}
+            for chunk_id, raw_hash in chunk_raw_response_hashes
+        ],
+    }
+    digest = _sha256_json(material)[:16]
     return f"run_{digest}"
 
 
@@ -585,14 +696,22 @@ def compute_chunk_extraction_fingerprint(
     chunk_id: str,
     chunk_evidence_ids: list[str],
     config: ExtractionConfig,
+    *,
+    knowledge_schema_version: str = KNOWLEDGE_SCHEMA_VERSION,
 ) -> str:
     """Computes cache validation fingerprint for a specific chunk extraction."""
-    eids_str = ",".join(chunk_evidence_ids)
-    seed = (
-        f"{manifest_fingerprint}|{chunks_fingerprint}|{chunk_id}|{eids_str}|"
-        f"{config.backend}|{config.model}|{config.prompt_version}|{config.temperature:.2f}|{config.max_tokens}"
+    config_fingerprint = compute_extraction_config_fingerprint(
+        manifest_fingerprint,
+        chunks_fingerprint,
+        config,
+        knowledge_schema_version=knowledge_schema_version,
     )
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    material = {
+        "config_fingerprint": config_fingerprint,
+        "chunk_id": chunk_id,
+        "ordered_evidence_ids": list(chunk_evidence_ids),
+    }
+    return _sha256_json(material)
 
 
 def build_candidate_id(
@@ -683,8 +802,9 @@ def extract_chunk_candidates(
     source_metadata: dict[str, Any],
     config: ExtractionConfig,
     backend: LLMBackend,
-    run_id: str,
+    run_id: str = "run_pending",
     raw_extractions_dir: Optional[Path] = None,
+    persist_artifact: bool = True,
 ) -> ChunkExtractionResult:
     """Execute LLM extraction and validation for a single chunk."""
     chunk_id = chunk["chunk_id"]
@@ -702,31 +822,23 @@ def extract_chunk_candidates(
 
     # Cache check
     raw_file = (raw_extractions_dir / f"{chunk_id}.json") if raw_extractions_dir else None
+    prior_data = load_json(raw_file, None) if raw_file and raw_file.is_file() else None
+    raw_response: Optional[dict[str, Any]] = None
+    generated_at = ""
+    cache_hit = False
     if raw_file and raw_file.is_file() and not config.force:
-        cached_data = load_json(raw_file, None)
-        if cached_data and cached_data.get("extraction_fingerprint") == extraction_fingerprint:
-            # Restore CanonicalKnowledgeUnit objects
-            cached_candidates = [
-                CanonicalKnowledgeUnit.from_dict(c)
-                for c in cached_data.get("candidates", [])
-            ]
-            cached_rejections = [
-                CandidateRejection(
-                    raw_candidate=r.get("raw_candidate", {}),
-                    reason=r.get("reason", "unknown"),
-                    details=r.get("details"),
-                )
-                for r in cached_data.get("rejections", [])
-            ]
-            return ChunkExtractionResult(
-                chunk_id=chunk_id,
-                status="cached",
-                candidates=cached_candidates,
-                rejections=cached_rejections,
-                raw_response=cached_data.get("raw_response"),
-                extraction_fingerprint=extraction_fingerprint,
-                cache_hit=True,
-            )
+        cached_fp = (
+            prior_data.get("cache_fingerprint") or prior_data.get("extraction_fingerprint")
+            if prior_data else None
+        )
+        if (
+            prior_data
+            and cached_fp == extraction_fingerprint
+            and isinstance(prior_data.get("raw_response"), dict)
+        ):
+            raw_response = prior_data["raw_response"]
+            generated_at = str(prior_data.get("generated_at") or "")
+            cache_hit = True
 
     # Build manifest index
     manifest_index = {item["evidence_id"]: item for item in manifest.get("evidence_items", [])}
@@ -740,10 +852,9 @@ def extract_chunk_candidates(
     ]
 
     # Invoke LLM with retry for transient / malformed failures
-    raw_response: Optional[dict[str, Any]] = None
     last_error: Optional[str] = None
 
-    for attempt in range(config.max_retries + 1):
+    for attempt in range(config.max_retries + 1) if raw_response is None else ():
         try:
             raw_response = backend.complete(
                 messages=messages,
@@ -756,15 +867,38 @@ def extract_chunk_candidates(
                 time.sleep(1.0)
 
     if raw_response is None:
+        generated_at = generated_at or utc_now()
         result = ChunkExtractionResult(
             chunk_id=chunk_id,
             status="failed",
             error=last_error or "LLM completion failed without response",
             extraction_fingerprint=extraction_fingerprint,
+            generated_at=generated_at,
+            backend=config.backend,
+            model=config.model,
+            prompt_version=config.prompt_version,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
         )
-        if raw_file:
+        if raw_file and persist_artifact:
             atomic_write_json(raw_file, result.to_dict())
         return result
+
+    raw_response_sha256 = compute_raw_response_sha256(raw_response)
+    if not generated_at:
+        same_prior_output = bool(
+            prior_data and prior_data.get("raw_response_sha256") == raw_response_sha256
+        )
+        same_prior_config = bool(
+            prior_data
+            and (prior_data.get("cache_fingerprint") or prior_data.get("extraction_fingerprint"))
+            == extraction_fingerprint
+        )
+        generated_at = (
+            str(prior_data.get("generated_at"))
+            if same_prior_output and same_prior_config and prior_data.get("generated_at")
+            else utc_now()
+        )
 
     # Validate LLM output structure
     raw_candidates_list = raw_response.get("candidates")
@@ -775,8 +909,16 @@ def extract_chunk_candidates(
             raw_response=raw_response,
             error="Response missing 'candidates' array",
             extraction_fingerprint=extraction_fingerprint,
+            raw_response_sha256=raw_response_sha256,
+            generated_at=generated_at,
+            backend=config.backend,
+            model=config.model,
+            prompt_version=config.prompt_version,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            cache_hit=cache_hit,
         )
-        if raw_file:
+        if raw_file and persist_artifact:
             atomic_write_json(raw_file, result.to_dict())
         return result
 
@@ -807,16 +949,23 @@ def extract_chunk_candidates(
 
     chunk_result = ChunkExtractionResult(
         chunk_id=chunk_id,
-        status="success",
+        status="cached" if cache_hit else "success",
         candidates=accepted_candidates,
         rejections=rejections,
         raw_response=raw_response,
         extraction_fingerprint=extraction_fingerprint,
-        cache_hit=False,
+        raw_response_sha256=raw_response_sha256,
+        generated_at=generated_at,
+        backend=config.backend,
+        model=config.model,
+        prompt_version=config.prompt_version,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+        cache_hit=cache_hit,
     )
 
     # Persist per-chunk raw extraction artifact
-    if raw_file:
+    if raw_file and persist_artifact:
         atomic_write_json(raw_file, chunk_result.to_dict())
 
     return chunk_result
@@ -825,6 +974,125 @@ def extract_chunk_candidates(
 # ----------------------------------------------------------------------
 # Top-Level Extraction Pipeline Entry
 # ----------------------------------------------------------------------
+
+def _with_run_id(
+    candidate: CanonicalKnowledgeUnit,
+    run_id: str,
+) -> CanonicalKnowledgeUnit:
+    return replace(
+        candidate,
+        extraction_lineage=replace(
+            candidate.extraction_lineage,
+            extraction_run_id=run_id,
+        ),
+    )
+
+
+def _finalize_asset_results(
+    *,
+    processed_dir: Path,
+    manifest_fingerprint: str,
+    chunks_fingerprint: str,
+    chunks_list: list[dict[str, Any]],
+    chunk_results: list[ChunkExtractionResult],
+    config: ExtractionConfig,
+    prior_candidates_artifact: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Assign one content-addressed run ID and persist an asset generation."""
+    config_fingerprint = compute_extraction_config_fingerprint(
+        manifest_fingerprint,
+        chunks_fingerprint,
+        config,
+    )
+    run_id = compute_extraction_run_id(
+        config_fingerprint,
+        [
+            (result.chunk_id, result.raw_response_sha256)
+            for result in chunk_results
+        ],
+    )
+
+    for result in chunk_results:
+        result.candidates = [
+            _with_run_id(candidate, run_id)
+            for candidate in result.candidates
+        ]
+
+    knowledge_dir = processed_dir / "knowledge"
+    raw_extractions_dir = knowledge_dir / "raw_extractions"
+    for result in chunk_results:
+        atomic_write_json(
+            raw_extractions_dir / f"{result.chunk_id}.json",
+            result.to_dict(),
+        )
+
+    all_candidates = [
+        candidate
+        for result in chunk_results
+        for candidate in result.candidates
+    ]
+    all_rejections = [
+        rejection
+        for result in chunk_results
+        for rejection in result.rejections
+    ]
+    prior_run_id = (
+        prior_candidates_artifact.get("extraction_run_id")
+        if prior_candidates_artifact else None
+    )
+    prior_generated_at = (
+        (prior_candidates_artifact.get("provenance") or {}).get("generated_at")
+        if prior_candidates_artifact else None
+    )
+    generated_at = (
+        str(prior_generated_at)
+        if prior_generated_at and (
+            prior_run_id == run_id
+            or all(result.status == "revalidated" for result in chunk_results)
+        )
+        else utc_now()
+    )
+
+    provenance = ExtractionProvenance(
+        backend=config.backend,
+        model=config.model,
+        prompt_version=config.prompt_version,
+        temperature=config.temperature,
+        generated_at=generated_at,
+        evidence_manifest_fingerprint=manifest_fingerprint,
+        evidence_chunks_fingerprint=chunks_fingerprint,
+        knowledge_schema_version=KNOWLEDGE_SCHEMA_VERSION,
+    )
+    chunk_summaries = [
+        {
+            "chunk_id": result.chunk_id,
+            "status": result.status,
+            "cache_hit": result.cache_hit,
+            "accepted_count": len(result.candidates),
+            "rejected_count": len(result.rejections),
+            "raw_response_sha256": result.raw_response_sha256,
+            "error": result.error,
+        }
+        for result in chunk_results
+    ]
+    artifact = {
+        "canonical_id": processed_dir.name,
+        "knowledge_schema_version": KNOWLEDGE_SCHEMA_VERSION,
+        "extraction_schema_version": EXTRACTION_SCHEMA_VERSION,
+        "extraction_config_fingerprint": config_fingerprint,
+        "extraction_run_id": run_id,
+        "provenance": provenance.to_dict(),
+        "total_chunks": len(chunks_list),
+        "total_raw_candidates": len(all_candidates) + len(all_rejections),
+        "total_accepted_candidates": len(all_candidates),
+        "total_rejected_candidates": len(all_rejections),
+        "chunk_summaries": chunk_summaries,
+        "candidates": [candidate.to_dict() for candidate in all_candidates],
+        "rejections": [rejection.to_dict() for rejection in all_rejections],
+    }
+    atomic_write_json(knowledge_dir / "knowledge_candidates.json", artifact)
+    return artifact
+
 
 def extract_knowledge_candidates(
     processed_dir: Path,
@@ -872,22 +1140,18 @@ def extract_knowledge_candidates(
     manifest_fingerprint = manifest.get("manifest_fingerprint") or manifest.get("fingerprint", "")
     chunks_fingerprint = chunks_doc.get("chunks_fingerprint") or chunks_doc.get("fingerprint", "")
 
-    run_id = compute_extraction_run_id(
-        manifest_fingerprint=manifest_fingerprint,
-        chunks_fingerprint=chunks_fingerprint,
-        config=config,
-    )
-
     # Setup output directories
     knowledge_dir = processed_dir / "knowledge"
     raw_extractions_dir = knowledge_dir / "raw_extractions"
     raw_extractions_dir.mkdir(parents=True, exist_ok=True)
 
     chunks_list = chunks_doc.get("chunks", [])
-
-    all_accepted_candidates: list[CanonicalKnowledgeUnit] = []
-    all_rejections: list[CandidateRejection] = []
-    chunk_summaries: list[dict[str, Any]] = []
+    candidates_output_path = knowledge_dir / "knowledge_candidates.json"
+    prior_candidates_artifact = (
+        load_json(candidates_output_path, None)
+        if candidates_output_path.is_file() else None
+    )
+    chunk_results: list[ChunkExtractionResult] = []
 
     for chunk in chunks_list:
         if "parent_chunks_fingerprint" not in chunk:
@@ -899,49 +1163,122 @@ def extract_knowledge_candidates(
             source_metadata=source_metadata,
             config=config,
             backend=backend,
-            run_id=run_id,
+            run_id="run_pending",
             raw_extractions_dir=raw_extractions_dir,
+            persist_artifact=False,
         )
+        chunk_results.append(chunk_result)
 
-        all_accepted_candidates.extend(chunk_result.candidates)
-        all_rejections.extend(chunk_result.rejections)
-
-        chunk_summaries.append({
-            "chunk_id": chunk["chunk_id"],
-            "status": chunk_result.status,
-            "cache_hit": chunk_result.cache_hit,
-            "accepted_count": len(chunk_result.candidates),
-            "rejected_count": len(chunk_result.rejections),
-            "error": chunk_result.error,
-        })
-
-    provenance = ExtractionProvenance(
-        backend=config.backend,
-        model=config.model,
-        prompt_version=config.prompt_version,
-        temperature=config.temperature,
-        generated_at=utc_now(),
-        evidence_manifest_fingerprint=manifest_fingerprint,
-        evidence_chunks_fingerprint=chunks_fingerprint,
-        knowledge_schema_version=KNOWLEDGE_SCHEMA_VERSION,
+    return _finalize_asset_results(
+        processed_dir=processed_dir,
+        manifest_fingerprint=manifest_fingerprint,
+        chunks_fingerprint=chunks_fingerprint,
+        chunks_list=chunks_list,
+        chunk_results=chunk_results,
+        config=config,
+        prior_candidates_artifact=prior_candidates_artifact,
     )
 
-    candidates_artifact = {
-        "canonical_id": canonical_id,
-        "knowledge_schema_version": KNOWLEDGE_SCHEMA_VERSION,
-        "extraction_schema_version": EXTRACTION_SCHEMA_VERSION,
-        "extraction_run_id": run_id,
-        "provenance": provenance.to_dict(),
-        "total_chunks": len(chunks_list),
-        "total_raw_candidates": len(all_accepted_candidates) + len(all_rejections),
-        "total_accepted_candidates": len(all_accepted_candidates),
-        "total_rejected_candidates": len(all_rejections),
-        "chunk_summaries": chunk_summaries,
-        "candidates": [c.to_dict() for c in all_accepted_candidates],
-        "rejections": [r.to_dict() for r in all_rejections],
+
+def revalidate_knowledge_candidates_from_raw(
+    processed_dir: Path,
+    config: ExtractionConfig,
+) -> dict[str, Any]:
+    """Rebuild M4-02 candidates from persisted raw responses without inference."""
+    processed_dir = Path(processed_dir)
+    manifest = load_json(processed_dir / "evidence_manifest.json")
+    chunks_doc = load_json(processed_dir / "evidence_chunks.json")
+    chunks_list = chunks_doc.get("chunks", [])
+    manifest_fingerprint = (
+        manifest.get("manifest_fingerprint") or manifest.get("fingerprint", "")
+    )
+    chunks_fingerprint = (
+        chunks_doc.get("chunks_fingerprint") or chunks_doc.get("fingerprint", "")
+    )
+    knowledge_dir = processed_dir / "knowledge"
+    raw_dir = knowledge_dir / "raw_extractions"
+    candidates_path = knowledge_dir / "knowledge_candidates.json"
+    prior_artifact = (
+        load_json(candidates_path, None) if candidates_path.is_file() else None
+    )
+    source_metadata = manifest.get("source_metadata") or manifest.get("source", {})
+    manifest_index = {
+        item["evidence_id"]: item
+        for item in manifest.get("evidence_items", [])
     }
+    results: list[ChunkExtractionResult] = []
 
-    candidates_output_path = knowledge_dir / "knowledge_candidates.json"
-    atomic_write_json(candidates_output_path, candidates_artifact)
+    for original_chunk in chunks_list:
+        chunk = (
+            original_chunk
+            if "parent_chunks_fingerprint" in original_chunk
+            else {**original_chunk, "parent_chunks_fingerprint": chunks_fingerprint}
+        )
+        raw_path = raw_dir / f"{chunk['chunk_id']}.json"
+        cached = load_json(raw_path, None)
+        if not cached or not isinstance(cached.get("raw_response"), dict):
+            raise ValueError(f"Missing reusable raw response: {raw_path}")
 
-    return candidates_artifact
+        raw_response = cached["raw_response"]
+        raw_candidates = raw_response.get("candidates")
+        if not isinstance(raw_candidates, list):
+            raise ValueError(f"Reusable raw response has no candidates array: {raw_path}")
+        validator = CandidateValidator(chunk, manifest_index)
+        resolver = EvidenceResolver(manifest_index)
+        candidates: list[CanonicalKnowledgeUnit] = []
+        rejections: list[CandidateRejection] = []
+        for idx, raw_candidate in enumerate(raw_candidates, start=1):
+            validated, rejection = validator.validate_candidate(raw_candidate)
+            if rejection:
+                rejections.append(rejection)
+            elif validated:
+                candidate_id = build_candidate_id(chunk["chunk_id"], idx, validated)
+                candidates.append(build_canonical_candidate(
+                    raw=validated,
+                    candidate_id=candidate_id,
+                    run_id="run_pending",
+                    chunk_id=chunk["chunk_id"],
+                    canonical_id=processed_dir.name,
+                    source_metadata=source_metadata,
+                    manifest_index=manifest_index,
+                    evidence_resolver=resolver,
+                ))
+
+        cache_fp = compute_chunk_extraction_fingerprint(
+            manifest_fingerprint,
+            chunks_fingerprint,
+            chunk["chunk_id"],
+            list(chunk.get("evidence_ids", [])),
+            config,
+        )
+        prior_generated_at = (
+            ((prior_artifact or {}).get("provenance") or {}).get("generated_at")
+        )
+        results.append(ChunkExtractionResult(
+            chunk_id=chunk["chunk_id"],
+            status="revalidated",
+            candidates=candidates,
+            rejections=rejections,
+            raw_response=raw_response,
+            extraction_fingerprint=cache_fp,
+            raw_response_sha256=compute_raw_response_sha256(raw_response),
+            generated_at=str(
+                cached.get("generated_at") or prior_generated_at or utc_now()
+            ),
+            backend=config.backend,
+            model=config.model,
+            prompt_version=config.prompt_version,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            cache_hit=False,
+        ))
+
+    return _finalize_asset_results(
+        processed_dir=processed_dir,
+        manifest_fingerprint=manifest_fingerprint,
+        chunks_fingerprint=chunks_fingerprint,
+        chunks_list=chunks_list,
+        chunk_results=results,
+        config=config,
+        prior_candidates_artifact=prior_artifact,
+    )

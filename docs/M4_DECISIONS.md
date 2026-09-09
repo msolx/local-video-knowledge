@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Architectural Decision Log
 
-> **Milestone Status**: `STARTED` (Design Phase M4-00)  
+> **Milestone Status**: `IN_PROGRESS` (M4-02 `DONE / SEALED`; M4-03 next)
 > **Status**: APPROVED / ACTIVE  
 > **Context**: Transitioning from Grounded Evidence (M3 Output) to Structured Canonical Knowledge Units (M4 Output).
 
@@ -142,8 +142,10 @@
 ## Decision 13: Observation Perceptual Evidence Gate & Boundary Validation
 - **Context**: Models frequently hallucinate `observation` units from spoken dialogue ("这里可以看到..."), violating the grounding contract.
 - **Decision**:
-  - Deterministic application-side validator enforces that if `unit_type == "observation"`, at least one cited evidence item must possess a perceptual modality (`visual_text`, `visual_description`, `perceptual_metric`).
-  - Candidates citing only `speech` evidence with `unit_type == "observation"` are rejected with reason `observation_without_perceptual_evidence`.
+  - Deterministic application-side validation first requires every cited EvidenceItem to expose a non-empty semantic payload copied from the authoritative manifest.
+  - If `unit_type == "observation"`, every cited evidence item must additionally be usable direct perceptual evidence (`visual_text`, resolved `visual_description`, or a supported `perceptual_metric`). Speech cannot be mixed into observation grounding.
+  - Empty OCR, null/whitespace visual descriptions, and `unresolved_visual_reference` records are preserved as M3 evidence but cannot ground any M4 candidate. Such candidates are rejected with `evidence_has_no_usable_semantic_payload`.
+  - Semantically usable but non-perceptual observation citations are rejected with `observation_without_perceptual_evidence`.
 
 ---
 
@@ -161,6 +163,18 @@
 ## Decision 15: Cache Fingerprinting, Determinism & Local Offline Execution
 - **Context**: LLM inference is computationally expensive and nondeterministic if unconstrained.
 - **Decision**:
-  - Chunk extraction is cached using a deterministic SHA-256 fingerprint over manifest fingerprint, chunks fingerprint, chunk evidence IDs, backend, model, prompt version, temperature, and token limit.
+  - Chunk cache identity and extraction generation identity are separate contracts.
+  - The chunk cache fingerprint is a deterministic SHA-256 over the evidence manifest/chunks fingerprints, exact ordered chunk membership, backend, model, endpoint reference, prompt version, prompt-template version, extraction/response schema fingerprints, `knowledge_schema_version`, temperature, and token limit.
   - Subsequent executions with matching fingerprints return cached results in <0.02s without invoking LLM inference.
   - Zero external network requests are permitted; execution utilizes local LM Studio / OpenAI-compatible runtime or deterministic mock backend.
+
+---
+
+## Decision 16: Content-Addressed Asset Extraction Generation
+- **Context**: Input/config-only run IDs collapse different nondeterministic force-rerun outputs into one lineage generation.
+- **Decision**:
+  - Each raw chunk artifact records `raw_response_sha256`, computed from the canonical JSON representation of the persisted `raw_response`, plus its cache fingerprint, first-generation timestamp, and non-secret backend/model/config references.
+  - The asset-level `extraction_run_id` is `run_<sha256(config_fingerprint + canonical ordered (chunk_id, raw_response_sha256))[:16]>`.
+  - Every candidate from all chunks in one asset extraction shares that asset-level run ID.
+  - Identical cached or force-rerun raw outputs retain the same run ID; any changed raw output changes the run ID. `generated_at` is excluded from identity.
+  - API keys, secret values, and secret environment-variable names are never persisted.
