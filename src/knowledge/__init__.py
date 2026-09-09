@@ -20,6 +20,24 @@ from .models import (
     validate_observation_grounding,
     adapt_legacy_point,
 )
+from .extractor import (
+    EXTRACTION_PROMPT_VERSION,
+    EXTRACTION_SCHEMA_VERSION,
+    RawKnowledgeCandidate,
+    CandidateRejection,
+    ChunkExtractionResult,
+    ExtractionConfig,
+    LLMBackend,
+    MockLLMBackend,
+    OpenAICompatibleBackend,
+    GroundedChunkInputBuilder,
+    CandidateValidator,
+    EvidenceResolver,
+    compute_extraction_run_id,
+    compute_chunk_extraction_fingerprint,
+    extract_chunk_candidates,
+    extract_knowledge_candidates,
+)
 
 __all__ = [
     "TranscriptChunk",
@@ -47,4 +65,22 @@ __all__ = [
     "create_knowledge_unit",
     "validate_observation_grounding",
     "adapt_legacy_point",
+    # M4-02 Extractor Pipeline
+    "EXTRACTION_PROMPT_VERSION",
+    "EXTRACTION_SCHEMA_VERSION",
+    "RawKnowledgeCandidate",
+    "CandidateRejection",
+    "ChunkExtractionResult",
+    "ExtractionConfig",
+    "LLMBackend",
+    "MockLLMBackend",
+    "OpenAICompatibleBackend",
+    "GroundedChunkInputBuilder",
+    "CandidateValidator",
+    "EvidenceResolver",
+    "compute_extraction_run_id",
+    "compute_chunk_extraction_fingerprint",
+    "extract_chunk_candidates",
+    "extract_knowledge_candidates",
 ]
+

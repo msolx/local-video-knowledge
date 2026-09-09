@@ -2,7 +2,7 @@
 
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
-> **Status Matrix**: M4-00 = `DONE` | M4-01 = `DONE` | M4-02 ~ M4-06 = `TODO`
+> **Status Matrix**: M4-00 = `DONE` | M4-01 = `DONE` | M4-02 = `DONE` | M4-03 ~ M4-06 = `TODO`
 
 ---
 
@@ -11,9 +11,9 @@
 | Task ID | Task Title | Owner | Status | Dependencies | Target Deliverable |
 | :--- | :--- | :---: | :---: | :--- | :--- |
 | **M4-00** | **Contract Design & Lineage Reconciliation** | Sealed | **`DONE`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
-| **M4-01** | **Canonical Model & Domain Layer** | Current Agent | **`DONE`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
-| **M4-02** | **Chunk-Level Extraction Pipeline** | NEXT AGENT | **`TODO`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
-| **M4-03** | **Cross-Chunk Deduplication & Merging** | TBD | **`TODO`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
+| **M4-01** | **Canonical Model & Domain Layer** | Completed | **`DONE`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
+| **M4-02** | **Chunk-Level Extraction Pipeline** | Completed | **`DONE`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
+| **M4-03** | **Cross-Chunk Deduplication & Merging** | NEXT AGENT | **`TODO`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
 | **M4-04** | **Entity & Topic Attachment** | TBD | **`TODO`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
 | **M4-05** | **Verification Contract & Audit Render** | TBD | **`TODO`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
 | **M4-06** | **M4 End-to-End Acceptance** | TBD | **`TODO`** | M4-01 ~ M4-05 | Full offline regression & formal asset acceptance |
@@ -27,7 +27,7 @@
 - **Deliverables**:
   - `docs/M4_KNOWLEDGE_MODEL_DESIGN.md`: Authoritative design specification (reconciled v1.3).
   - `docs/M4_HANDOFF.md`: Master handoff and cross-agent protocol.
-  - `docs/M4_DECISIONS.md`: Architectural decisions log (Decisions 1-11).
+  - `docs/M4_DECISIONS.md`: Architectural decisions log (Decisions 1-15).
   - `docs/M4_TASKS.md`: Task board and progression matrix.
 
 ### M4-01: Canonical Model & Domain Layer (`DONE`)
@@ -36,28 +36,36 @@
   - `src/knowledge/models.py`:
     - Enums: `UnitType`, `VerificationStatus`, `AttributionStatus`.
     - Value objects: `TemporalRange`, `SequenceRange`.
-    - Evidence Reference: `EvidenceRef` (decoupled from chunk identity).
+    - Evidence Reference: `EvidenceRef` (decoupled from chunk identity, multidimensional coordinate support).
     - Attribution: `AttributionInfo` (source-neutral, unverified speech ASR default).
     - Lineage & Provenance: `ExtractionProvenance`, `ExtractionLineage`.
     - Knowledge Unit: `CanonicalKnowledgeUnit` (deterministic ID, strict invariants, verification question invariant).
     - Document Container: `CanonicalKnowledgeUnitsDocument`.
     - Normalization & Helpers: `normalize_statement`, `compute_knowledge_unit_id`, `create_knowledge_unit`, `validate_observation_grounding`, `adapt_legacy_point`.
-  - `tests/test_knowledge_models.py`: 35 unit tests covering all structural, validation, serialization, and deterministic ID invariants.
+  - `tests/test_knowledge_models.py`: 36 unit tests covering all structural, validation, serialization, coordinate, and deterministic ID invariants.
 
-### M4-02: Chunk-Level Extraction Pipeline (`TODO` · NEXT AGENT START HERE)
+### M4-02: Chunk-Level Extraction Pipeline (`DONE`)
 - **Objective**: Implement LLM-based structured knowledge extraction per chunk with unit-aware lineage.
-- **Target Scope**:
-  - Ingest `evidence_chunks.json`.
-  - Structured extraction prompt enforcing `knowledge-units-v1`.
-  - Source-neutral attribution mapping and default `unverified_speaker` logic.
-  - Unit lineage population (`input_chunk_ids: [chunk_id]`, `candidate_id`).
-  - Integration with local LM Studio worker.
-  - Unit test suite: `tests/test_knowledge_extraction.py`.
+- **Delivered**:
+  - `src/knowledge/extractor.py`:
+    - `RawKnowledgeCandidate`: dataclass for untrusted model proposals.
+    - `GroundedChunkInputBuilder`: formats evidence items into strictly grounded prompts with untrusted-data boundary.
+    - `CandidateValidator`: validates candidate existence in manifest, chunk boundaries, duplicate handling, canonical ordering restoration, and observation perceptual gating.
+    - `EvidenceResolver`: copies `source_excerpt`, `temporal_range`, `sequence_range` verbatim from manifest.
+    - `ChunkExtractionResult` & `ExtractionConfig`: caching, retry, and candidate rejection audit.
+    - `extract_chunk_candidates` & `extract_knowledge_candidates`: pipeline entries producing `knowledge_candidates.json` and `raw_extractions/<chunk_id>.json`.
+  - `tests/test_knowledge_extraction.py`: 46 unit tests covering mock backend, grounding, injection defense, coordinates, lineage, caching, and structural fixtures.
+  - Real local model smoke test (`scripts/run_m4_02_real_smoke.py`):
+    - LM Studio `qwen/qwen3-8b` (identifier `qwen3-8b`):
+      - C10 Video: 4 chunks, 62 accepted candidates, 0 rejections, 0 violations, audit valid.
+      - C10 Album: 1 chunk, 6 accepted candidates, 0 rejections, 0 violations, audit valid.
+      - Idempotency / cache hit verified (<0.02s without LLM call, identical IDs).
 
-### M4-03: Cross-Chunk Deduplication & Merging (`TODO`)
+### M4-03: Cross-Chunk Deduplication & Merging (`TODO` · NEXT AGENT START HERE)
 - **Objective**: Deduplicate and merge knowledge units extracted across chunk boundaries, recording merge lineage.
 - **Target Scope**:
   - Boundary overlap duplicate resolution (preserving overlap identity).
+
   - Merge lineage tracking (`input_chunk_ids: [chk1, chk2]`, `source_candidate_ids`).
   - Normalized statement merge.
   - Unit test suite: `tests/test_knowledge_dedup.py`.

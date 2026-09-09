@@ -121,3 +121,46 @@
     1. **Document-Level `extraction_provenance`**: Preserves shared execution metadata (backend, model, prompt_version, knowledge_schema_version, temperature, fingerprints).
     2. **Unit-Level `extraction_lineage`**: Tracks the exact execution context for each unit (`extraction_run_id`, `input_chunk_ids`, `candidate_id`, `source_candidate_ids`, `merge_strategy`).
   - **Merge Lineage Contract (M4-03 Extension Point)**: When duplicate candidates from overlapping chunks are merged, the canonical unit retains the union of all `input_chunk_ids` and records all original `source_candidate_ids`, ensuring full traceability without losing extractor origin.
+
+---
+
+## Decision 12: Untrusted LLM Candidate Security Model & Deterministic System Synthesis
+- **Context**: Relying on an LLM to directly output canonical IDs, exact timestamps, coordinates, verification status, or attribution invites hallucinations, prompt injection vulnerabilities, and coordinate drift.
+- **Decision**:
+  - The LLM acts strictly as an untrusted candidate proposer. It is only permitted to propose: `unit_type`, `statement`, `evidence_ids`, and `extraction_confidence`.
+  - The application layer strictly owns and deterministically synthesizes all canonical attributes:
+    - `knowledge_unit_id`: computed via canonical formula.
+    - `source_excerpt`: copied verbatim from authoritative `EvidenceItem` payloads in `evidence_manifest.json`.
+    - `temporal_range` & `sequence_range`: copied verbatim from manifest.
+    - `attribution`: derived from asset metadata and cited evidence modality (ordinary ASR speech strictly defaults to `unverified_speaker`).
+    - `verification_status`: hardcoded to `"not_checked"`.
+    - `entities` & `topics`: empty lists `[]` (deferred to M4-04).
+  - Any model proposal containing forbidden canonical fields is strictly rejected.
+
+---
+
+## Decision 13: Observation Perceptual Evidence Gate & Boundary Validation
+- **Context**: Models frequently hallucinate `observation` units from spoken dialogue ("这里可以看到..."), violating the grounding contract.
+- **Decision**:
+  - Deterministic application-side validator enforces that if `unit_type == "observation"`, at least one cited evidence item must possess a perceptual modality (`visual_text`, `visual_description`, `perceptual_metric`).
+  - Candidates citing only `speech` evidence with `unit_type == "observation"` are rejected with reason `observation_without_perceptual_evidence`.
+
+---
+
+## Decision 14: Intermediate Extraction Artifacts vs Final Canonical Artifacts
+- **Context**: M4-02 extracts chunk-level candidates before cross-chunk deduplication and merging (which belongs to M4-03). Overwrite or premature emission of `knowledge_units.json` breaks milestone isolation.
+- **Decision**:
+  - M4-02 outputs intermediate auditable artifacts:
+    - Per-chunk raw extractions: `data/processed/<canonical_id>/knowledge/raw_extractions/<chunk_id>.json`.
+    - Intermediate candidates artifact: `data/processed/<canonical_id>/knowledge/knowledge_candidates.json` (schema: `m4-candidates-v1`).
+  - Final `knowledge_units.json` (schema: `knowledge-units-v1`) is strictly deferred to M4-05.
+  - Overlap duplicate units across chunk boundaries are preserved in `knowledge_candidates.json` for M4-03 deduplication.
+
+---
+
+## Decision 15: Cache Fingerprinting, Determinism & Local Offline Execution
+- **Context**: LLM inference is computationally expensive and nondeterministic if unconstrained.
+- **Decision**:
+  - Chunk extraction is cached using a deterministic SHA-256 fingerprint over manifest fingerprint, chunks fingerprint, chunk evidence IDs, backend, model, prompt version, temperature, and token limit.
+  - Subsequent executions with matching fingerprints return cached results in <0.02s without invoking LLM inference.
+  - Zero external network requests are permitted; execution utilizes local LM Studio / OpenAI-compatible runtime or deterministic mock backend.
