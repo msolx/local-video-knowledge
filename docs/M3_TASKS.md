@@ -14,7 +14,7 @@
 | **M3-02** | **Video / ASR Integration** | Current Agent | **`DONE`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
 | **M3-03** | **Image Album OCR/VLM Integration** | Current Agent | **`DONE`** | M3-01 | Multi-image visual inspection pipeline |
 | **M3-04** | **Metadata & Provenance Binding** | Current Agent | **`DONE`** | M3-01, M3-02, M3-03 | Grounded evidence manifest across media + collector DB |
-| **M3-05** | Long Media Chunking | TBD | **`TODO`** | M3-02 | Hierarchical segment chunking & merge validation |
+| **M3-05** | Long Media Chunking | TBD | **`TODO`** | M3-02, M3-04 | Evidence segment windowing & chunking (no summarization) |
 | **M3-06** | M3 End-to-End Acceptance | TBD | **`TODO`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
 
 ---
@@ -84,8 +84,24 @@
   - 17 comprehensive unit/integration tests in `tests/test_evidence_provenance.py`.
 
 ### M3-05: Long Media Chunking (`TODO`)
-- Dynamic chunking of long transcripts and image batches with hierarchical summary merging.
+- **Objective**: Provide deterministic evidence chunking and windowing for long transcripts and large album batches (`Evidence -> Evidence Chunks`).
+- **In Scope (Evidence Chunking Only)**:
+  - Transcript segment grouping into coherent evidence chunks.
+  - Configurable evidence windowing, chunk boundary detection, and token/time overlap.
+  - Deterministic chunk IDs (`chk_000001`, etc.) and exact evidence segment references (`evidence_ids`).
+  - Precise time-range references (`start_time`, `end_time`, `duration`).
+  - Large album evidence batching preserving 1-indexed image sequence references.
+  - Deterministic ordering and chunk-level fingerprinting.
+  - Strict preservation of source artifact binding and verification status (`"not_checked"`).
+- **Out of Scope (Strict Non-Goals)**:
+  - NO hierarchical summarization.
+  - NO summary merging.
+  - NO semantic knowledge synthesis.
+  - NO claim extraction or opinion extraction.
+  - NO entity linking or knowledge unit generation.
+  - Contract invariant: `Evidence -> Evidence Chunks` (NOT `Evidence -> Knowledge/Summary`).
 
 ### M3-06: M3 End-to-End Acceptance (`TODO`)
-- Final closure audit for M3: formal local assets -> evidence generation.
+- Final closure audit for M3: formal local assets -> evidence generation and chunking.
+
 

@@ -314,16 +314,34 @@ Current Status : M3-04 DONE, ready for M3-05.
      * Epistemic contract: verification_status = "not_checked" across all evidence items.
      * Clean timestamp semantics: published_at (creator time) vs first_seen_at (collector observation time).
      * Strictly NO fake collected_at.
-     * Exact 1:1 artifact binding for PRIMARY_VIDEO, ALBUM_IMAGE, and AUDIO_TRACK.
+     * Exact 1:1 artifact binding for PRIMARY_VIDEO, ALBUM_IMAGE (and optional AUDIO_TRACK when present in formal manifest).
      * Resilient fallback when metadata.db is absent (enrichment_status: "unenriched").
      * Sub-second resume (< 2ms) on identical fingerprint.
-     * Real C10 video (7681603850364521734: 184 segments) and album (7682038498466993905: 4 items) verified.
+     * Real C10 video (7681603850364521734: 184 segments, 173,847,684 bytes) and album (7682038498466993905: 4 items, 0 audio tracks) verified.
      * 17/17 tests in tests/test_evidence_provenance.py passed.
      * Full regression: 723 passed, 10 skipped.
 
 6. TARGET FOR M3-05 (Long Media Chunking):
-   - Dynamic chunking of long transcripts and image batches with hierarchical summary merging.
-   - Build upon verified evidence_manifest.json and segments from M3-04.
+   - Contract Invariant: Evidence -> Evidence Chunks (STRICTLY NO Knowledge Extraction or Summarization).
+   - In Scope (Allowed):
+     * transcript segment grouping
+     * evidence windowing
+     * chunk boundary
+     * overlap
+     * deterministic chunk IDs (chk_000001, etc.)
+     * exact evidence references (evidence_ids)
+     * time-range references (start, end, duration)
+     * large album evidence batching (preserving 1-indexed sequence references)
+     * preserving verification_status = "not_checked" across all chunks
+   - Out of Scope (Strict Non-Goals / Forbidden):
+     * hierarchical summarization
+     * summary merging
+     * semantic knowledge synthesis
+     * claim extraction
+     * opinion extraction
+     * entity linking
+     * knowledge unit generation
+
 
 7. EXACT NEXT COMMANDS TO RUN:
    # Step A: Run all 4 M3 unit suites (57 tests)
