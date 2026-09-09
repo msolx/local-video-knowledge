@@ -152,6 +152,21 @@ from .retrieval import (
     FTS5RetrievalBackend,
     retrieve,
 )
+from .evaluation import (
+    EVALUATION_POLICY_VERSION,
+    DEFAULT_GOLDEN_PATH,
+    compute_asset_sha256,
+    compute_corpus_fingerprint,
+    GoldenQuery,
+    GoldenSuite,
+    load_golden_suite,
+    load_golden_queries,
+    QueryEvaluation,
+    evaluate_query,
+    EvaluationSummary,
+    evaluate_suite,
+    write_evaluation_report,
+)
 
 __all__ = [
     "TranscriptChunk",
@@ -304,5 +319,19 @@ __all__ = [
     "RetrievalBackend",
     "FTS5RetrievalBackend",
     "retrieve",
+    # M5-05 Retrieval Evaluation Harness
+    "EVALUATION_POLICY_VERSION",
+    "DEFAULT_GOLDEN_PATH",
+    "compute_asset_sha256",
+    "compute_corpus_fingerprint",
+    "GoldenQuery",
+    "GoldenSuite",
+    "load_golden_suite",
+    "load_golden_queries",
+    "QueryEvaluation",
+    "evaluate_query",
+    "EvaluationSummary",
+    "evaluate_suite",
+    "write_evaluation_report",
 ]
 

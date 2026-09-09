@@ -2,7 +2,7 @@
 
 > **Milestone Target**: A derived, rebuildable SQLite Knowledge Store over the canonical M4 `knowledge_units.json` artifacts, plus a stable lexical retrieval contract with full evidence expansion. Offline and deterministic; no LLM, no embeddings.
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
-> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `DONE` | M5-04 = `DONE` | M5-05 = `TODO` | M5-06 = `TODO`
+> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `DONE` | M5-04 = `DONE` | M5-05 = `DONE` | M5-06 = `TODO`
 
 ---
 
@@ -15,7 +15,7 @@
 | **M5-02** | **SQLite FTS5 Lexical / Metadata Indexing** | Complete | **`DONE`** | M5-01 | `src/knowledge/fts.py`, `tests/test_knowledge_fts.py` |
 | **M5-03** | **Retrieval API & Evidence Expansion** | Complete | **`DONE`** | M5-01, M5-02 | `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py` |
 | **M5-04** | **Filtering, Ranking & Query Diagnostics** | Complete | **`DONE`** | M5-03 | `src/knowledge/retrieval.py` (rank layer + QueryPlan + diagnostics), `tests/test_knowledge_ranking.py` |
-| **M5-05** | **Retrieval Evaluation Harness & C10 Golden Queries** | — | **`TODO`** | M5-03, M5-04 | `scripts/run_m5_05_evaluation.py`, `tests/test_m5_retrieval_evaluation.py` |
+| **M5-05** | **Retrieval Evaluation Harness & C10 Golden Queries** | Complete | **`DONE`** | M5-03, M5-04 | `src/knowledge/evaluation.py`, `evaluation/m5/c10_golden_queries.json`, `scripts/run_m5_05_retrieval_eval.py`, `tests/test_knowledge_evaluation.py` |
 | **M5-06** | **End-to-End Acceptance** | — | **`TODO`** | M5-01 ~ M5-05 | `docs/M5_FINAL_ACCEPTANCE.md` |
 
 ---
@@ -132,13 +132,17 @@
   - **Tests**: `tests/test_knowledge_ranking.py` (45 tests) covering the 38 spec areas (query plan long/short/mixed, filter diagnostics, candidate count, policy version, statement/entity/topic/evidence matches, evidence-only, exact phrase, term coverage, BM25/short directions, relative priority, tie-break, stability, confidence/verification non-bias, AND semantics, no fuzzy/no rewrite, JSON safety, compatibility, zero-result, real C10 audits). Real C10 audit confirms explainable ordering (statement/entity hits first, evidence-only last).
   - Full regression: **1179 passed, 10 skipped** (M5-03 baseline 1134 + 45 new ranking tests; zero regressions). M5-01/M5-02/FTS schema untouched; M4 untouched.
 
-### M5-05: Retrieval Evaluation Harness & C10 Golden Queries (`TODO`)
-- **Objective**: Deterministic golden-query fixtures over the real C10 assets and an evaluation runner.
-- **Target Scope**:
-  - Video queries: `Vulkan`, `RDNA`, `Thinking`, `27B` → video asset only, relevant KUs, EvidenceRefs attached.
-  - Album queries: `logitech`, `AGON`, `SMILEY` → album asset only, correct KU IDs, no cross-asset corruption.
-  - Assertions: correct canonical asset, relevant KU, verbatim evidence, filters work, deterministic ordering.
-- **Deliverable**: `scripts/run_m5_05_evaluation.py`, `tests/test_m5_retrieval_evaluation.py`.
+### M5-05: Retrieval Evaluation Harness & C10 Golden Queries (`DONE`)
+- **Objective**: Deterministic golden-query fixtures over the real C10 assets and a pure-deterministic evaluation harness that answers: did the query find the knowledge it should, in a reasonable position, with accurate filters, complete provenance/evidence, on the expected planner path, deterministically? Fully offline (no LLM / embedding / reranker / network / live Douyin).
+- **Delivered**:
+  - **Golden fixture** `evaluation/m5/c10_golden_queries.json` (`suite_version=m5-c10-golden-v1`, `evaluation_policy_version=m5-evaluation-policy-v1`, `corpus_version=c10-final-v1`): 17 queries bound to the corpus fingerprint (`sha256` of canonical `[{canonical_id, sha256}]` of the two real final M4 artifacts; 62 + 6 = 68 KU). Categories: A) long trigram direct `Vulkan` / `RDNA` / `Thinking` / `27B`; B) album lexical/entity `logitech` / `AGON` / `SMILEY`; C) short Chinese fallback `模型` / `速度` + absent term `推理` (zero-result negative); D) mixed `Vulkan 模型`; E) structured filters (`logitech` + album → hits, + video → zero); F) topic filter; G) entity filter; H) verification_status=not_checked filter; plus a deterministic random-absent zero-result query.
+  - **Relevance semantics**: each query declares `exhaustive` (full 68-KU corpus reviewed → Precision@K/Recall@K/F1@K valid) or `partial` (only clearly-required KUs marked → Hit@K/MRR/required-hit success only). Golden KU IDs come only from real final artifacts on disk; no circular curation from current top results.
+  - **Harness** `src/knowledge/evaluation.py`: `GoldenQuery` / `GoldenSuite` / `load_golden_suite` / `evaluate_query` / `evaluate_suite` / `EvaluationSummary` / `write_evaluation_report`. Per-query: Hit@K, MRR, first_relevant_rank, P/R/F1 (exhaustive only), filter_correct, retrieval_path_correct, evidence/provenance/term_coverage completeness, required/forbidden hits, expected/forbidden canonical, zero-result gates, max_first_relevant_rank bounds. Aggregates never mix denominators (`exhaustive_query_count` / `partial_query_count` reported).
+  - **Corpus fingerprint binding**: stale corpus → every query fails `stale corpus fingerprint` instead of silently producing plausible scores.
+  - **Runner** `scripts/run_m5_05_retrieval_eval.py`: disposable temp store (never production), ingests both C10 final artifacts, runs suite, prints concise report, writes machine-readable `evaluation/m5/reports/c10_retrieval_evaluation.json` (gitignored generated artifact; `generated_at` excluded from determinism).
+  - **Tests**: `tests/test_knowledge_evaluation.py` (56 tests) covering the 45 spec areas (fixture parse/validation, corpus fingerprint + stale detection, partial vs exhaustive semantics, Hit@K/MRR/P/R/F1, required/forbidden/filter/zero-result gates, retrieval path success/failure, evidence/provenance/ranking-diagnostics completeness, determinism, aggregate denominators, all 17 real C10 golden queries, full-suite pass, report writing).
+  - **Real C10 result**: 17/17 queries pass; aggregate mean Hit@K = 0.8235, mean MRR = 0.8235; exhaustive mean Precision@K = 0.6467, Recall@K = 0.9417, F1@K = 0.7144; filter_accuracy = 1.0, retrieval_path_accuracy = 1.0, evidence_completeness = 1.0, provenance_completeness = 1.0, term_coverage_valid_rate = 1.0. Zero-result and filter negatives all pass.
+  - Full regression: **1235 passed, 10 skipped** (M5-04 baseline 1179 + 56 new evaluation tests; zero regressions). M4 / M5-01..04 sealed files untouched (evaluation is a consumer; no retrieval bug surfaced, so no `STOP/HOLD`).
 
 ### M5-06: End-to-End Acceptance (`TODO`)
 - **Objective**: Offline full regression, real C10 store build + query acceptance.

@@ -33,6 +33,9 @@ logs/
 # M2 Formal archive assets (binary media and manifests)
 archive/
 
+# Generated retrieval evaluation reports (golden fixtures stay tracked)
+evaluation/m5/reports/
+
 # Media and generated visual evidence
 *.mp4
 *.mkv

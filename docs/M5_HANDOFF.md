@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `DONE`; M5-03 = `DONE`; M5-04 = `DONE`; M5-05 ~ M5-06 = `TODO`)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `DONE`; M5-03 = `DONE`; M5-04 = `DONE`; M5-05 = `DONE`; M5-06 = `TODO`)
 > **Source Baseline**: Milestone M4 Sealed at Tag `m4-unified-knowledge-model-complete` (`92775b9ad862bc179f041c8ad56c2ee1c1bd8e49`).
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
 
@@ -190,6 +190,46 @@ embeddings, no reranker. Retrieval returns hits, never answers.
   **1179 passed, 10 skipped** (M5-03 baseline 1134 + 45 new; zero regressions).
   M5-01 store / M5-02 FTS schema / M5-03 retrieval contracts untouched; M4 untouched.
 
+### M5-05 Deliverables Completed:
+- `src/knowledge/evaluation.py` (new, consumer-only): `GoldenQuery` /
+  `GoldenSuite` / `load_golden_suite` / `load_golden_queries` /
+  `evaluate_query` / `evaluate_suite` / `EvaluationSummary` /
+  `write_evaluation_report`. `evaluate_query` computes Hit@K, MRR,
+  first_relevant_rank, Precision@K/Recall@K/F1@K (exhaustive judgment only),
+  required/forbidden hit checks, expected/forbidden canonical checks,
+  zero-result gates, max_first_relevant_rank bounds, filter_correct,
+  retrieval_path_correct, evidence/provenance completeness,
+  term_coverage_valid. Aggregates never mix denominators
+  (`exhaustive_query_count` / `partial_query_count` reported).
+- `evaluation/m5/c10_golden_queries.json` (tracked, `m5-c10-golden-v1`):
+  17 queries bound to the C10 corpus fingerprint (`sha256` of canonical
+  `[{canonical_id, sha256}]` of the two real final M4 artifacts). Categories:
+  long trigram (`Vulkan`/`RDNA`/`Thinking`/`27B`), album entity terms
+  (`logitech`/`AGON`/`SMILEY`), short Chinese fallback (`模型`/`速度` + absent
+  `推理` negative), mixed (`Vulkan 模型`), structured filters (album/video),
+  topic filter, entity filter, verification_status filter, and a deterministic
+  random-absent zero-result query. Golden KU IDs come only from real disk
+  artifacts; stale corpus fingerprint fails every query.
+- `scripts/run_m5_05_retrieval_eval.py`: disposable temp store (never
+  production), ingests both C10 final artifacts, verifies 2 assets / 68 KU /
+  fingerprint, runs suite, prints concise report, writes machine-readable
+  `evaluation/m5/reports/c10_retrieval_evaluation.json` (gitignored).
+- `tests/test_knowledge_evaluation.py`: 56 tests (fixture parse/validation,
+  corpus fingerprint + stale detection, partial vs exhaustive semantics,
+  Hit@K / MRR / P/R/F1, required/forbidden/filter/zero-result gates, retrieval
+  path success/failure, evidence/provenance/ranking-diagnostics completeness,
+  determinism, aggregate denominators, all 17 real C10 golden queries,
+  full-suite pass, report writing).
+- **Real C10 result**: 17/17 golden queries pass. Aggregate mean Hit@K =
+  0.8235, mean MRR = 0.8235; exhaustive mean Precision@K = 0.6467,
+  Recall@K = 0.9417, F1@K = 0.7144; filter_accuracy = 1.0,
+  retrieval_path_accuracy = 1.0, evidence_completeness = 1.0,
+  provenance_completeness = 1.0, term_coverage_valid_rate = 1.0.
+- Targeted suite: 157 passed (56 retrieval + 45 ranking + 56 evaluation). Full
+  regression: **1235 passed, 10 skipped** (M5-04 baseline 1179 + 56 new; zero
+  regressions). M5-01/02/03/04 sealed files untouched; no retrieval bug surfaced
+  (no STOP/HOLD); M4 untouched.
+
 ---
 
 ## 2. Key Architecture Invariants & Contracts
@@ -302,6 +342,14 @@ embeddings, no reranker. Retrieval returns hits, never answers.
   `tests/test_knowledge_ranking.py` (45 tests); `src/knowledge/__init__.py`
   extended with M5-04 exports. `store.py` / `fts.py` / `models.py` untouched by
   M5-04.
+- **M5-05 Additions**: `src/knowledge/evaluation.py` (evaluation harness +
+  golden-query model); `evaluation/m5/c10_golden_queries.json` (17 golden
+  queries bound to the C10 corpus fingerprint); `scripts/run_m5_05_retrieval_eval.py`
+  (disposable-store runner writing `evaluation/m5/reports/c10_retrieval_evaluation.json`,
+  gitignored); `tests/test_knowledge_evaluation.py` (56 tests);
+  `src/knowledge/__init__.py` extended with M5-05 exports.
+  `retrieval.py` / `fts.py` / `store.py` / `models.py` untouched by M5-05
+  (evaluation is a pure consumer; no retrieval bug surfaced, so no STOP/HOLD).
 - **Zero M4 code modified**: `models.py`, `extractor.py`, `merger.py`,
   `enrichment.py`, `render.py` untouched. No FTS5, no search, no LLM, no
   runtime started or probed.
@@ -325,24 +373,19 @@ not require any runtime.
 
 ## 5. NEXT_AGENT_START_HERE
 
-- **Task**: `M5-05 · Retrieval Evaluation Harness & C10 Golden Queries`
-- **Objective**: Build a deterministic evaluation harness over the real C10
-  assets and golden queries, using the M5-04-sealed retrieval contract
-  (`src/knowledge/retrieval.py` + `tests/test_knowledge_ranking.py` are the
-  inputs):
-  - Deterministic golden-query fixtures: video `Vulkan`, `RDNA`, `Thinking`,
-    `27B` (video asset only, relevant KUs, EvidenceRefs attached) and album
-    `logitech`, `AGON`, `SMILEY` (album asset only, correct KU IDs, no
-    cross-asset corruption).
-  - Assert correct canonical asset, relevant KU, verbatim evidence, filters
-    work, deterministic ordering, term-coverage invariant holds, ranking is
-    explainable (M5-04 `match_info` / `ranking_diagnostics`).
-  - Evaluation runner `scripts/run_m5_05_evaluation.py` writing a
-    deterministic summary; `tests/test_m5_retrieval_evaluation.py`.
-- **Do not begin M5-06** or later tasks.
+- **Task**: `M5-06 · End-to-End Acceptance`
+- **Objective**: Offline full regression, real C10 store build + query
+  acceptance, and the final M5 acceptance document:
+  - Build the official store from both C10 final artifacts (62 + 6 = 68 KU),
+    run the golden suite, verify counts/evidence/filters, zero mutation of M4
+    artifacts, capture regression baselines.
+  - Deliver `docs/M5_FINAL_ACCEPTANCE.md`.
+- **Do not begin any post-M5 task**.
 - **Hard constraints**:
-  - M5-01 store + M5-02 FTS + M5-03/04 retrieval contracts are sealed;
-    read-only.
+  - M5-01 store + M5-02 FTS + M5-03/04 retrieval + M5-05 evaluation
+    (`src/knowledge/evaluation.py`, `evaluation/m5/c10_golden_queries.json`)
+    contracts are sealed; read-only.
   - M4 canonical artifacts remain read-only. No LLM, no embeddings, no
     reranker, no runtime probing, no network.
   - Retrieval ≠ answering: no RAG, no citations, no answer synthesis.
+  - No production DB write until the acceptance step explicitly requires it.

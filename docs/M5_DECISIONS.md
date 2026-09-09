@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`, M5-03 = `DONE`, M5-04 = `DONE`; M5-05 next)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`, M5-03 = `DONE`, M5-04 = `DONE`, M5-05 = `DONE`; M5-06 next)
 > **Status**: APPROVED / ACTIVE
 > **Context**: M4 is COMPLETE/SEALED (`knowledge_units.json` schema `knowledge-units-v1`). M5 builds a derived, rebuildable, queryable Knowledge Store with a lexical retrieval contract, offline and deterministic.
 
@@ -327,3 +327,35 @@
 - **Decision**:
   - All diagnostics are JSON-safe (no sqlite Row, set, Enum repr, Path, Connection). Tests assert serialization safety and that no SQL/MATCH text appears in result payloads.
   - Candidate retrieval uses query-level SQL (a single candidate query returning score + content fields, no LIMIT) plus limited canonical hydration for the top-k hits only; `candidate_count_before_limit` needs no extra payload fetch. No per-hit diagnostic query loops.
+
+## Decision 37: M5-05 Retrieval Evaluation Harness Is a Consumer, Never a Patch
+- **Context**: M5-05 must prove the retrieval contract without drifting into ranking development or turning the benchmark into a heuristic-tuning loop.
+- **Decision**:
+  - New module `src/knowledge/evaluation.py` plus a tracked golden fixture `evaluation/m5/c10_golden_queries.json`; the harness consumes the sealed `retrieve` API only.
+  - Golden queries carry an explicit `relevance_judgment`: `exhaustive` (whole C10 corpus reviewed, so Precision@K/Recall@K/F1@K are valid) vs `partial` (only clearly-required KUs marked; only Hit@K/MRR/required-hit success are valid). Aggregates never mix denominators.
+  - If a golden evaluation exposes a genuine retrieval bug, the harness reports it (`STOP/HOLD`) rather than patching `retrieval.py` in the same task.
+
+## Decision 38: Golden Data Is Corpus-Bound and Real-Disk-Backed
+- **Context**: Relevance judgments must not be circular (derived from the current top result) or fabricated from memory.
+- **Decision**:
+  - Golden KU IDs come only from the real final M4 artifacts on disk (62 + 6 = 68 KU, verified each run).
+  - The golden suite records a deterministic corpus fingerprint (`sha256` of canonical `[{canonical_id, sha256}]` sorted by id). A stale fingerprint fails every query with `stale corpus fingerprint` instead of silently producing plausible scores.
+
+## Decision 39: Relevance Semantics & Metric Denominators
+- **Context**: Partial judgments must not be inflated into fake precision/recall numbers.
+- **Decision**:
+  - `exhaustive` queries report Precision@K, Recall@K, F1@K; `partial` queries report `None` for those and are excluded from the exhaustive aggregate.
+  - Hit@K and MRR are reported for all queries; MRR is documented as based on the known relevant set, not the full relevance universe.
+  - Report counts `exhaustive_query_count` and `partial_query_count` separately.
+
+## Decision 40: Structural Gates Are Binary, Not Scored
+- **Context**: Filter/path/provenance correctness must be exact, not averaged into a soft score.
+- **Decision**:
+  - `filter_accuracy`, `retrieval_path_accuracy`, `evidence_completeness_rate`, `provenance_completeness_rate`, `term_coverage_valid_rate` are computed per-query and aggregated as rates; every golden query must satisfy its required hits, max_first_relevant_rank bound, and zero-result expectation.
+  - Acceptance gates: filter_accuracy = 1.0, retrieval_path_accuracy = 1.0, evidence_completeness_rate = 1.0, provenance_completeness_rate = 1.0. Ranking metrics are reported as-is without a fabricated threshold.
+
+## Decision 41: Determinism & Report Generation
+- **Context**: Repeated evaluation must be reproducible and reports must be machine-readable without comparing nondeterministic fields.
+- **Decision**:
+  - Repeated runs over the same disposable store yield identical per-query results, ordering, ranks, paths, and structural metrics (verified by test); `generated_at` is excluded from comparisons.
+  - Runner writes `evaluation/m5/reports/c10_retrieval_evaluation.json` (gitignored generated artifact). The runner never creates a production store; it uses a disposable temp DB.
