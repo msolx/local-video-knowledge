@@ -2,7 +2,7 @@
 
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
-> **Status Matrix**: M4-00 = `DONE` | M4-01 ~ M4-06 = `TODO`
+> **Status Matrix**: M4-00 = `DONE` | M4-01 = `DONE` | M4-02 ~ M4-06 = `TODO`
 
 ---
 
@@ -10,9 +10,9 @@
 
 | Task ID | Task Title | Owner | Status | Dependencies | Target Deliverable |
 | :--- | :--- | :---: | :---: | :--- | :--- |
-| **M4-00** | **Contract Design & Lineage Reconciliation** | Current Agent | **`DONE`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
-| **M4-01** | **Canonical Model & Domain Layer** | TBD | **`TODO`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
-| **M4-02** | **Chunk-Level Extraction Pipeline** | TBD | **`TODO`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
+| **M4-00** | **Contract Design & Lineage Reconciliation** | Sealed | **`DONE`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
+| **M4-01** | **Canonical Model & Domain Layer** | Current Agent | **`DONE`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
+| **M4-02** | **Chunk-Level Extraction Pipeline** | NEXT AGENT | **`TODO`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
 | **M4-03** | **Cross-Chunk Deduplication & Merging** | TBD | **`TODO`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
 | **M4-04** | **Entity & Topic Attachment** | TBD | **`TODO`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
 | **M4-05** | **Verification Contract & Audit Render** | TBD | **`TODO`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
@@ -30,14 +30,21 @@
   - `docs/M4_DECISIONS.md`: Architectural decisions log (Decisions 1-11).
   - `docs/M4_TASKS.md`: Task board and progression matrix.
 
-### M4-01: Canonical Model & Domain Layer (`TODO`)
+### M4-01: Canonical Model & Domain Layer (`DONE`)
 - **Objective**: Implement core domain models and validation in Python.
-- **Target Scope**:
-  - `CanonicalKnowledgeUnit`, `EvidenceRef` (decoupled from chunk), `AttributionInfo`, `UnitExtractionLineage`, `EntityMention`.
-  - Deterministic ID generator (`ku_<hash>` using schema_version, canonical_id, unit_type, canonical_ordered_eids, normalized_statement).
-  - Unit test suite: `tests/test_knowledge_models.py`.
+- **Delivered**:
+  - `src/knowledge/models.py`:
+    - Enums: `UnitType`, `VerificationStatus`, `AttributionStatus`.
+    - Value objects: `TemporalRange`, `SequenceRange`.
+    - Evidence Reference: `EvidenceRef` (decoupled from chunk identity).
+    - Attribution: `AttributionInfo` (source-neutral, unverified speech ASR default).
+    - Lineage & Provenance: `ExtractionProvenance`, `ExtractionLineage`.
+    - Knowledge Unit: `CanonicalKnowledgeUnit` (deterministic ID, strict invariants, verification question invariant).
+    - Document Container: `CanonicalKnowledgeUnitsDocument`.
+    - Normalization & Helpers: `normalize_statement`, `compute_knowledge_unit_id`, `create_knowledge_unit`, `validate_observation_grounding`, `adapt_legacy_point`.
+  - `tests/test_knowledge_models.py`: 35 unit tests covering all structural, validation, serialization, and deterministic ID invariants.
 
-### M4-02: Chunk-Level Extraction Pipeline (`TODO`)
+### M4-02: Chunk-Level Extraction Pipeline (`TODO` · NEXT AGENT START HERE)
 - **Objective**: Implement LLM-based structured knowledge extraction per chunk with unit-aware lineage.
 - **Target Scope**:
   - Ingest `evidence_chunks.json`.

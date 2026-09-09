@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Master Handoff Protocol
 
-> **Milestone Status**: `STARTED` (Design Phase M4-00 Finalized)  
+> **Milestone Status**: `IN_PROGRESS` (M4-00 = `DONE`, M4-01 = `DONE`, M4-02 = `TODO`)  
 > **Source Baseline**: Milestone M3 Sealed at Tag `m3-media-integration-complete` (`1f1c3b9a604d2fbdb9bb63606d6392aa893c080e`).  
 > **Working Branch**: `feat/m4-unified-knowledge-model`
 
@@ -13,6 +13,11 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
 ### Upstream M3 Grounded Deliverables Consumed:
 - `data/processed/<canonical_id>/evidence_manifest.json` (Atomic Evidence items)
 - `data/processed/<canonical_id>/evidence_chunks.json` (Windowed chunk partitions)
+
+### M4 Deliverables Completed:
+- `docs/M4_*.md`: Full schema, taxonomy, source-neutral attribution, observation contract, and lineage design.
+- `src/knowledge/models.py`: Canonical domain layer and JSON serialization.
+- `tests/test_knowledge_models.py`: 35 offline unit tests verifying domain invariants.
 
 ---
 
@@ -53,4 +58,15 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
 
 ## 4. Worktree State & Git Hygiene
 - **Branch**: `feat/m4-unified-knowledge-model`
-- **Zero Production Code Touched**: Files in `src/`, `tests/`, and `config/` remain completely untouched during M4-00.
+- **M4-01 Additions**: `src/knowledge/models.py`, `src/knowledge/__init__.py`, `tests/test_knowledge_models.py`.
+- **Zero M2/M3 Code Touched**: Files in `src/collector/`, `src/downloader/`, `src/media_adapter/`, `src/visual/`, `src/chunking/`, `src/provenance.py` remain completely untouched.
+
+---
+
+## 5. NEXT_AGENT_START_HERE
+- **Task**: `M4-02 · Chunk-Level Extraction Pipeline`
+- **Objective**: Implement LLM structured extraction from `evidence_chunks.json` feeding into `CanonicalKnowledgeUnit` candidates with unit-aware lineage.
+- **Entry Points**:
+  - `src/knowledge/models.py` (canonical domain definitions)
+  - `src/knowledge/extractor.py` (to be implemented)
+  - `tests/test_knowledge_extraction.py` (to be implemented)

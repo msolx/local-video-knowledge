@@ -1,4 +1,50 @@
 from .chunker import TranscriptChunk, chunk_transcript, estimate_tokens
 from .service import build_knowledge, ensure_source_schema, visual_usage_summary
+from .models import (
+    KNOWLEDGE_SCHEMA_VERSION,
+    UnitType,
+    VerificationStatus,
+    AttributionStatus,
+    TemporalRange,
+    SequenceRange,
+    EvidenceRef,
+    AttributionInfo,
+    EntityMention,
+    ExtractionProvenance,
+    ExtractionLineage,
+    CanonicalKnowledgeUnit,
+    CanonicalKnowledgeUnitsDocument,
+    normalize_statement,
+    compute_knowledge_unit_id,
+    create_knowledge_unit,
+    validate_observation_grounding,
+    adapt_legacy_point,
+)
 
-__all__ = ["TranscriptChunk", "build_knowledge", "chunk_transcript", "ensure_source_schema", "estimate_tokens", "visual_usage_summary"]
+__all__ = [
+    "TranscriptChunk",
+    "build_knowledge",
+    "chunk_transcript",
+    "ensure_source_schema",
+    "estimate_tokens",
+    "visual_usage_summary",
+    # M4 Canonical Domain Models
+    "KNOWLEDGE_SCHEMA_VERSION",
+    "UnitType",
+    "VerificationStatus",
+    "AttributionStatus",
+    "TemporalRange",
+    "SequenceRange",
+    "EvidenceRef",
+    "AttributionInfo",
+    "EntityMention",
+    "ExtractionProvenance",
+    "ExtractionLineage",
+    "CanonicalKnowledgeUnit",
+    "CanonicalKnowledgeUnitsDocument",
+    "normalize_statement",
+    "compute_knowledge_unit_id",
+    "create_knowledge_unit",
+    "validate_observation_grounding",
+    "adapt_legacy_point",
+]
