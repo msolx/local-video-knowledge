@@ -2,7 +2,7 @@
 
 > **Milestone Target**: A derived, rebuildable SQLite Knowledge Store over the canonical M4 `knowledge_units.json` artifacts, plus a stable lexical retrieval contract with full evidence expansion. Offline and deterministic; no LLM, no embeddings.
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
-> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `DONE` | M5-04 = `DONE` | M5-05 = `DONE` | M5-06 = `TODO`
+> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `DONE` | M5-04 = `DONE` | M5-05 = `DONE` | M5-06 = `DONE` — **M5 overall = COMPLETE / ACCEPTED WITH KNOWN LIMITATIONS**
 
 ---
 
@@ -16,7 +16,7 @@
 | **M5-03** | **Retrieval API & Evidence Expansion** | Complete | **`DONE`** | M5-01, M5-02 | `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py` |
 | **M5-04** | **Filtering, Ranking & Query Diagnostics** | Complete | **`DONE`** | M5-03 | `src/knowledge/retrieval.py` (rank layer + QueryPlan + diagnostics), `tests/test_knowledge_ranking.py` |
 | **M5-05** | **Retrieval Evaluation Harness & C10 Golden Queries** | Complete | **`DONE`** | M5-03, M5-04 | `src/knowledge/evaluation.py`, `evaluation/m5/c10_golden_queries.json`, `scripts/run_m5_05_retrieval_eval.py`, `tests/test_knowledge_evaluation.py` |
-| **M5-06** | **End-to-End Acceptance** | — | **`TODO`** | M5-01 ~ M5-05 | `docs/M5_FINAL_ACCEPTANCE.md` |
+| **M5-06** | **End-to-End Acceptance** | Complete | **`DONE`** | M5-01 ~ M5-05 | `docs/M5_FINAL_ACCEPTANCE.md`, `scripts/run_m5_06_acceptance.py`, `tests/test_m5_acceptance.py` |
 
 ---
 
@@ -144,10 +144,19 @@
   - **Real C10 result**: 17/17 queries pass; aggregate mean Hit@K = 0.8235, mean MRR = 0.8235; exhaustive mean Precision@K = 0.6467, Recall@K = 0.9417, F1@K = 0.7144; filter_accuracy = 1.0, retrieval_path_accuracy = 1.0, evidence_completeness = 1.0, provenance_completeness = 1.0, term_coverage_valid_rate = 1.0. Zero-result and filter negatives all pass.
   - Full regression: **1235 passed, 10 skipped** (M5-04 baseline 1179 + 56 new evaluation tests; zero regressions). M4 / M5-01..04 sealed files untouched (evaluation is a consumer; no retrieval bug surfaced, so no `STOP/HOLD`).
 
-### M5-06: End-to-End Acceptance (`TODO`)
-- **Objective**: Offline full regression, real C10 store build + query acceptance.
-- **Target Scope**: build store from both C10 artifacts, run golden queries, verify counts/evidence/filters, no output mutation of M4 artifacts, regression baselines.
-- **Deliverable**: `docs/M5_FINAL_ACCEPTANCE.md`.
+### M5-06: End-to-End Acceptance (`DONE`)
+- **Objective**: Offline, deterministic acceptance of the full M4→Store→FTS→Retrieval→Evaluation chain against real M4 artifacts, then creation of the first production store.
+- **Delivered**:
+  - `docs/M5_FINAL_ACCEPTANCE.md`: milestone scope, sealed commits, store architecture, tokenizer decision, query/retrieval contract, ranking policy, real production store counts, C10 golden baseline, structural/retrieval acceptance, production store creation, known limitations, final decision.
+  - `scripts/run_m5_06_acceptance.py`: dry-run (default) / `--finalize` modes. Read-only source validation, temp-store `rebuild_store` + `validate_store`, round-trip audit (68 KU, 0 mismatches), representative retrieval, short-query, structured-filter, ranking, golden suite, determinism, rebuild determinism, failure-safety smoke; only `--finalize` creates the production store after all gates pass.
+  - `tests/test_m5_acceptance.py`: 30 tests (source discovery, invalid source fail, store rebuild/validation, KU round-trip, FTS count, retrieval contract, short/mixed queries, filters, diagnostics, golden fingerprint, golden evaluation, determinism, rebuild revision determinism, rebuild-failure preserves store, production path not touched by tests, real C10 chain).
+- **Real C10 acceptance** (production store `data/knowledge/knowledge_store.sqlite3`, gitignored):
+  - 2 assets / 68 KU / 150 EvidenceRefs / 138 entities / 103 topics; FTS content = index = 68; validation valid, 0 violations.
+  - Store revision `7b604b334eaaede2f98e341a1cbeafdf3979d4643bc2b54196769e19919355d6` (identical to acceptance temp store).
+  - Golden suite 17/17 PASS (10 exhaustive / 7 partial); Hit@K 0.8235, MRR 0.8235, Precision@K 0.6467, Recall@K 0.9417, F1@K 0.7144; filter/path/evidence/provenance accuracy 1.0; baseline preserved.
+  - Deterministic rerun + rebuild determinism verified; M4 code and M4 artifacts untouched; no LLM/runtime/network.
+- **Regression**: targeted (store+fts+retrieval+ranking+evaluation+acceptance) **279 passed**; full `pytest tests -q` **1265 passed, 10 skipped** (M5-05 baseline 1235 + 30 new; zero regressions).
+- **Outcome**: **M5-06 = DONE · M5 overall = COMPLETE / ACCEPTED WITH KNOWN LIMITATIONS**.
 
 ---
 

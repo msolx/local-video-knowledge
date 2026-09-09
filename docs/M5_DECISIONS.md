@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`, M5-03 = `DONE`, M5-04 = `DONE`, M5-05 = `DONE`; M5-06 next)
+> **Milestone Status**: `M5-00 = DONE / SEALED`, `M5-01 = DONE`, `M5-02 = DONE`, `M5-03 = DONE`, `M5-04 = DONE`, `M5-05 = DONE`, `M5-06 = DONE` — **M5 overall = COMPLETE / ACCEPTED WITH KNOWN LIMITATIONS**
 > **Status**: APPROVED / ACTIVE
 > **Context**: M4 is COMPLETE/SEALED (`knowledge_units.json` schema `knowledge-units-v1`). M5 builds a derived, rebuildable, queryable Knowledge Store with a lexical retrieval contract, offline and deterministic.
 
@@ -359,3 +359,12 @@
 - **Decision**:
   - Repeated runs over the same disposable store yield identical per-query results, ordering, ranks, paths, and structural metrics (verified by test); `generated_at` is excluded from comparisons.
   - Runner writes `evaluation/m5/reports/c10_retrieval_evaluation.json` (gitignored generated artifact). The runner never creates a production store; it uses a disposable temp DB.
+
+## Decision 42: End-to-End Acceptance & Production Store Creation
+- **Context**: M5-06 must verify the full chain against real M4 artifacts and only then create the first production store.
+- **Decision**:
+  - Acceptance is fully offline and deterministic: source validation, temp-store `rebuild_store` + `validate_store`, round-trip audit, representative retrieval, golden suite, determinism, rebuild determinism, and failure-safety smoke all run on disposable DBs before any production write.
+  - Round-trip audit hydrates every stored KU from `canonical_payload_json` via `CanonicalKnowledgeUnit.from_dict` and compares all 11 canonical fields; mismatch > 0 = FAIL.
+  - The production store `data/knowledge/knowledge_store.sqlite3` is created only after every gate passes, via `rebuild_store` (temp build → validate → atomic replace); it is a derived/rebuildable artifact, gitignored, and never committed.
+  - Golden baseline (Hit@K 0.8235, MRR 0.8235, Precision@K 0.6467, Recall@K 0.9417, F1@K 0.7144) must be preserved; any ranking/results change requires HOLD + reason, never silent golden rewrite or ranking patch.
+  - M5 overall: COMPLETE / ACCEPTED WITH KNOWN LIMITATIONS (documented in `docs/M5_FINAL_ACCEPTANCE.md`).
