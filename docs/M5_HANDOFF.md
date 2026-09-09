@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `DONE`; M5-03 = `DONE`; M5-04 ~ M5-06 = `TODO`)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`; M5-01 = `DONE`; M5-02 = `DONE`; M5-03 = `DONE`; M5-04 = `DONE`; M5-05 ~ M5-06 = `TODO`)
 > **Source Baseline**: Milestone M4 Sealed at Tag `m4-unified-knowledge-model-complete` (`92775b9ad862bc179f041c8ad56c2ee1c1bd8e49`).
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
 
@@ -140,6 +140,56 @@ embeddings, no reranker. Retrieval returns hits, never answers.
   Full regression: **1134 passed, 10 skipped** (M5-02 baseline 1078 + 56 new;
   zero regressions).
 
+### M5-04 Deliverables Completed:
+- `src/knowledge/retrieval.py` (extended, M5-03 contract untouched): M5-04
+  ranking + diagnostics layer.
+  - **QueryPlan** (frozen, JSON-safe) + `build_query_plan(query)`:
+    `original_query`, `normalized_query`, `terms`, `long_terms`, `short_terms`,
+    `retrieval_path` (`fts_trigram` / `substring_short` /
+    `fts_trigram_with_short_filter`), `filters`, `top_k`. Never exposes SQL.
+  - **Ranking policy `lexical-ranking-v1`** (frozen; in result + per-hit
+    diagnostics): FTS/mixed lexicographic key
+    `(evidence_only_tier, exact_statement_phrase DESC, statement_match DESC,
+    entity_match DESC, topic_match DESC, term_coverage DESC, raw_bm25 ASC,
+    unit_rowid ASC)`; short path keeps `weighted_substring_score` primary
+    (higher better) with exact-phrase + coverage tie-breaks; `unit_rowid` ASC
+    is the universal final tie-break. BM25 stays lower-is-better, never
+    negated/normalized into a fake probability.
+  - **Upgraded diagnostics**: `RetrievalResult.diagnostics` now includes
+    `query_plan`, `filters_applied` (caller values only), and
+    `candidate_count_before_limit` (no-LIMIT candidate query; no payload pulls
+    for counting) alongside `result_count`/`top_k`/`short_query_fallback`/
+    `ranking_policy_version`/`limitations`.
+  - **Field-match signals & invariant**: `match_info` extended with
+    `statement_match`/`entity_match`/`topic_match`/`evidence_match`,
+    exact-phrase flags, `matched_term_count`/`total_term_count`/`term_coverage`,
+    `evidence_only_match`. `check_retrieval_invariant()` +
+    `RetrievalInvariantError` enforce the AND term-coverage invariant.
+  - **No bias / no penalties**: `extraction_confidence` and `verification_status`
+    never boost ranking; no content-based meta-unit penalties.
+  - `ranking_diagnostics` adds `ranking_policy_version`, `bm25_direction` /
+    `score_direction`, `ranking_components`, `short_term_matches` (mixed), and a
+    templated `why_this_hit` (never an LLM).
+- `src/knowledge/__init__.py`: M5-04 exports added (paths, `RANKING_POLICY_VERSION`,
+  `QueryPlan`, `build_query_plan`, `RetrievalInvariantError`,
+  `check_retrieval_invariant`).
+- `tests/test_knowledge_ranking.py`: 45 tests (query plan long/short/mixed,
+  filter diagnostics, candidate/result counts, policy version, field-match
+  signals, evidence-only, exact phrase, term coverage + invariant, BM25/short
+  directions, statement>entity>topic>evidence relative priority, tie-break,
+  stability, confidence/verification non-bias, AND semantics, no fuzzy/no
+  rewrite, JSON safety, SQL-free diagnostics, hit compatibility, zero-result,
+  real C10 ranking audits).
+- Real C10 ranking audit (temp DB, 9 golden queries): explainable ordering —
+  statement/entity/topic hits rank above evidence-only hits
+  (`evidence_only_tier=1` + `evidence_only_match=true`), short path ranks by
+  weighted score with `candidate_count_before_limit` > `result_count` where
+  applicable; term coverage 1.0 everywhere; `Vulkan` 5 candidates / 5 hits,
+  `Thinking` evidence-only flagged, `模型` 24 candidates / 5 hits (top_k=5).
+- Targeted suite: 101 passed (56 retrieval + 45 ranking). Full regression:
+  **1179 passed, 10 skipped** (M5-03 baseline 1134 + 45 new; zero regressions).
+  M5-01 store / M5-02 FTS schema / M5-03 retrieval contracts untouched; M4 untouched.
+
 ---
 
 ## 2. Key Architecture Invariants & Contracts
@@ -247,6 +297,11 @@ embeddings, no reranker. Retrieval returns hits, never answers.
 - **M5-03 Additions**: `src/knowledge/retrieval.py`,
   `tests/test_knowledge_retrieval.py`; `src/knowledge/__init__.py` extended with
   M5-03 exports. `store.py` / `fts.py` / `models.py` untouched by M5-03.
+- **M5-04 Additions**: `src/knowledge/retrieval.py` extended (QueryPlan +
+  `lexical-ranking-v1` ranking + upgraded diagnostics + term-coverage invariant);
+  `tests/test_knowledge_ranking.py` (45 tests); `src/knowledge/__init__.py`
+  extended with M5-04 exports. `store.py` / `fts.py` / `models.py` untouched by
+  M5-04.
 - **Zero M4 code modified**: `models.py`, `extractor.py`, `merger.py`,
   `enrichment.py`, `render.py` untouched. No FTS5, no search, no LLM, no
   runtime started or probed.
@@ -270,21 +325,24 @@ not require any runtime.
 
 ## 5. NEXT_AGENT_START_HERE
 
-- **Task**: `M5-04 · Filtering, Ranking & Query Diagnostics`
-- **Objective**: Harden the retrieval layer's structured filters, BM25 ranking
-  + score components, and query diagnostics on top of M5-03's
-  `src/knowledge/retrieval.py` (frozen M5-03 contracts are the input):
-  - Filters `canonical_ids`, `unit_types`, `verification_statuses`, `topics`,
-    `entity_names` against structured projection columns (never FTS substring),
-    already implemented in M5-03 — extend/diagnose as needed.
-  - `score_components = {"lexical": <bm25>}`; explicit non-equivalence of
-    retrieval score vs confidence vs verification (Decision 27/28).
-  - Ranking never auto-boosts `verified` / penalizes `not_checked` (Design §16).
-  - `top_k` bound; diagnostics (candidates scanned, filter stats).
-  - Short-query fallback and mixed-path planning are already sealed (Decision 25).
-- **Do not begin M5-05** or later tasks.
+- **Task**: `M5-05 · Retrieval Evaluation Harness & C10 Golden Queries`
+- **Objective**: Build a deterministic evaluation harness over the real C10
+  assets and golden queries, using the M5-04-sealed retrieval contract
+  (`src/knowledge/retrieval.py` + `tests/test_knowledge_ranking.py` are the
+  inputs):
+  - Deterministic golden-query fixtures: video `Vulkan`, `RDNA`, `Thinking`,
+    `27B` (video asset only, relevant KUs, EvidenceRefs attached) and album
+    `logitech`, `AGON`, `SMILEY` (album asset only, correct KU IDs, no
+    cross-asset corruption).
+  - Assert correct canonical asset, relevant KU, verbatim evidence, filters
+    work, deterministic ordering, term-coverage invariant holds, ranking is
+    explainable (M5-04 `match_info` / `ranking_diagnostics`).
+  - Evaluation runner `scripts/run_m5_05_evaluation.py` writing a
+    deterministic summary; `tests/test_m5_retrieval_evaluation.py`.
+- **Do not begin M5-06** or later tasks.
 - **Hard constraints**:
-  - M5-01 store + M5-02 FTS + M5-03 retrieval contracts are sealed; read-only.
-  - M4 canonical artifacts remain read-only. No LLM, no embeddings, no runtime
-    probing.
+  - M5-01 store + M5-02 FTS + M5-03/04 retrieval contracts are sealed;
+    read-only.
+  - M4 canonical artifacts remain read-only. No LLM, no embeddings, no
+    reranker, no runtime probing, no network.
   - Retrieval ≠ answering: no RAG, no citations, no answer synthesis.

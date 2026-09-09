@@ -1,4 +1,4 @@
-"""M5-03 Evidence-Grounded Retrieval API.
+"""M5-03/M5-04 Evidence-Grounded Retrieval API.
 
 Public retrieval contract (``RetrievalQuery -> RetrievalHit[] ->
 RetrievalResult``) over the sealed M5-01 canonical store and the M5-02 trigram
@@ -20,13 +20,39 @@ in M5_DECISIONS.md):
   unit_type, verification_status, topics, entity_names) and are applied in SQL
   BEFORE ranking / LIMIT so filtered-out rows can never crowd out hits.
 - BM25 (FTS path): lower is better. raw_bm25 is exposed as a diagnostic; it is
-  never negated into a fake probability. ORDER BY bm25 ASC.
+  never negated into a fake probability.
 - Short-query fallback (terms < 3 chars, a documented trigram limitation):
   deterministic literal substring scan over ``knowledge_fts_content`` using
   parameterized ``instr()`` (never LIKE wildcards, never a user-controlled
   pattern). Weighted short score (statement 5 / entity_names 2 / topics 2 /
   evidence_excerpts 1) — higher is better.
 - Determinism: ties are broken by ``unit_rowid`` ASC. No retrieval cache.
+
+M5-04 additions (ranking policy ``lexical-ranking-v1``, see
+M5_DECISIONS.md Decision 30-36):
+
+- ``QueryPlan`` describes how a query is parsed and which retrieval path runs,
+  deterministically and JSON-safe. It never exposes SQL as a contract.
+- ``RetrievalResult.diagnostics`` is a stable, JSON-safe structure:
+  normalized/long/short terms, retrieval path, applied filters, candidate
+  count before LIMIT, result count, top_k, fallback flag, ranking policy
+  version and documented limitations.
+- A conservative lexicographic ranking policy. The FTS paths place
+  field-priority signals before ``raw_bm25`` (a hit that matches
+  statement/entity/topic outranks an evidence-only hit; raw_bm25 then decides
+  within the same field profile; ``unit_rowid`` is the final tie-break). The
+  short path keeps ``weighted_substring_score`` primary (higher is better)
+  and uses exact-phrase + term-coverage as deterministic tie-breaks.
+- Field-match signals (``statement_match`` / ``entity_match`` /
+  ``topic_match`` / ``evidence_match``), exact-phrase flags,
+  ``matched_term_count`` / ``total_term_count`` / ``term_coverage`` and
+  ``evidence_only_match`` are recorded per hit in ``match_info``.
+- Retrieval invariant: under AND semantics every accepted hit must match every
+  required term (``term_coverage == 1.0``). A violation raises
+  ``RetrievalInvariantError``.
+- No learned reranker, no LLM scoring, no embedding similarity, no semantic
+  similarity, no ``extraction_confidence``/``verification_status`` ranking
+  boost.
 """
 
 from __future__ import annotations
@@ -69,8 +95,29 @@ RETRIEVAL_METHOD_FTS = "lexical_fts5_trigram"
 RETRIEVAL_METHOD_SHORT = "lexical_substring_short"
 RETRIEVAL_METHOD_MIXED = "lexical_fts5_trigram_with_short_filter"
 
+# M5-04: compact, contract-level retrieval-path names used by QueryPlan and
+# result diagnostics. Mapped 1:1 to the sealed M5-03 method names.
+RETRIEVAL_PATH_FTS = "fts_trigram"
+RETRIEVAL_PATH_SHORT = "substring_short"
+RETRIEVAL_PATH_MIXED = "fts_trigram_with_short_filter"
+
+_METHOD_TO_PATH = {
+    RETRIEVAL_METHOD_FTS: RETRIEVAL_PATH_FTS,
+    RETRIEVAL_METHOD_SHORT: RETRIEVAL_PATH_SHORT,
+    RETRIEVAL_METHOD_MIXED: RETRIEVAL_PATH_MIXED,
+}
+
+# Frozen deterministic ranking policy version. Any future change to the
+# ranking tuple must bump this and be recorded in M5_DECISIONS.md.
+RANKING_POLICY_VERSION = "lexical-ranking-v1"
+
 # Deterministic short-query field weights (mirrors FTS_FIELD_WEIGHTS).
 _SHORT_FIELDS = ("statement", "entity_names", "topics", "evidence_excerpts")
+
+
+class RetrievalInvariantError(RuntimeError):
+    """Raised when an accepted hit violates the term-coverage invariant."""
+
 
 # ----------------------------------------------------------------------
 # Query normalization & literal planning
@@ -94,6 +141,92 @@ def plan_literal_terms(normalized_query: str) -> list[str]:
     authority. User text is never spliced into SQL or MATCH.
     """
     return [term for term in normalized_query.split(" ") if term]
+
+
+# ----------------------------------------------------------------------
+# QueryPlan
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QueryPlan:
+    """Deterministic, JSON-safe description of how a query is executed.
+
+    M5-04 read-only plan. It answers: how was the query parsed, which
+    retrieval path runs, which filters apply and with what ``top_k``. It is a
+    diagnostic/planning record only — never executable SQL.
+    """
+
+    original_query: str
+    normalized_query: str
+    terms: list[str]
+    long_terms: list[str]
+    short_terms: list[str]
+    retrieval_path: str
+    filters: dict[str, list[str]]
+    top_k: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "original_query": self.original_query,
+            "normalized_query": self.normalized_query,
+            "terms": list(self.terms),
+            "long_terms": list(self.long_terms),
+            "short_terms": list(self.short_terms),
+            "retrieval_path": self.retrieval_path,
+            "filters": {k: list(v) for k, v in self.filters.items()},
+            "top_k": self.top_k,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> QueryPlan:
+        if not isinstance(d, dict):
+            raise TypeError("QueryPlan payload must be a dict")
+        return cls(
+            original_query=str(d["original_query"]),
+            normalized_query=str(d["normalized_query"]),
+            terms=[str(t) for t in d["terms"]],
+            long_terms=[str(t) for t in d["long_terms"]],
+            short_terms=[str(t) for t in d["short_terms"]],
+            retrieval_path=str(d["retrieval_path"]),
+            filters={str(k): [str(v) for v in val] for k, val in d.get("filters", {}).items()},
+            top_k=int(d["top_k"]),
+        )
+
+
+_FILTER_NAMES = ("canonical_ids", "unit_types", "verification_statuses", "topics", "entity_names")
+
+
+def build_query_plan(query: RetrievalQuery) -> QueryPlan:
+    """Build the deterministic plan for a validated query.
+
+    Long terms are those with >= 3 codepoints (FTS trigram); short terms have
+    1-2 codepoints (deterministic substring fallback). Retrieval path follows
+    the M5-03 planner: only-long -> FTS, only-short -> substring, both ->
+    mixed. Filters are recorded exactly as provided by the caller (no
+    auto-inferred filters are ever added).
+    """
+    normalized = normalize_retrieval_query(query.query_text)
+    terms = plan_literal_terms(normalized)
+    long_terms = [t for t in terms if len(t) >= 3]
+    short_terms = [t for t in terms if len(t) <= 2]
+    if long_terms and not short_terms:
+        path = RETRIEVAL_PATH_FTS
+    elif short_terms and not long_terms:
+        path = RETRIEVAL_PATH_SHORT
+    else:
+        path = RETRIEVAL_PATH_MIXED
+    filters = {name: list(getattr(query, name)) for name in _FILTER_NAMES if getattr(query, name)}
+    return QueryPlan(
+        original_query=query.query_text,
+        normalized_query=normalized,
+        terms=terms,
+        long_terms=long_terms,
+        short_terms=short_terms,
+        retrieval_path=path,
+        filters=filters,
+        top_k=query.top_k,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -366,8 +499,13 @@ def _build_filter_sql(query: RetrievalQuery, params: list[Any]) -> str:
     return (" AND " + " AND ".join(clauses)) if clauses else ""
 
 
+def _applied_filters(query: RetrievalQuery) -> dict[str, list[str]]:
+    """Deterministic record of the filters actually applied (never inferred)."""
+    return {name: list(getattr(query, name)) for name in _FILTER_NAMES if getattr(query, name)}
+
+
 # ----------------------------------------------------------------------
-# Query planner -> SQL paths
+# Query planner -> SQL candidate queries (no LIMIT; ranking in Python)
 # ----------------------------------------------------------------------
 
 
@@ -410,66 +548,73 @@ def _short_condition_sql(short_terms: list[str], params: list[Any]) -> str:
     return " AND ".join(parts)
 
 
-def _fts_retrieve(
+_CANDIDATE_COLS = (
+    "k.unit_rowid AS unit_rowid",
+    "c.statement AS statement",
+    "c.entity_names AS entity_names",
+    "c.topics AS topics",
+    "c.evidence_excerpts AS evidence_excerpts",
+)
+
+
+def _fts_candidates(
     conn: sqlite3.Connection,
     long_terms: list[str],
     query: RetrievalQuery,
-) -> list[tuple[int, float]]:
-    """All-long-terms path: trigram FTS with literal AND, filters before LIMIT."""
+) -> list[dict[str, Any]]:
+    """All candidates on the all-long path: trigram FTS with literal AND and
+    structured filters, NO LIMIT. Returns one dict per row with the content
+    projection fields and the raw bm25 score."""
     field_weights = [FTS_FIELD_WEIGHTS[col] for col in FTS_COLUMNS]
     params: list[Any] = list(field_weights)
     match_sql = _fts_match_sql(long_terms)
     params.append(match_sql)
     filter_sql = _build_filter_sql(query, params)
-    params.append(query.top_k)
     sql = f"""
-        SELECT k.unit_rowid AS unit_rowid,
+        SELECT {", ".join(_CANDIDATE_COLS)},
                bm25({FTS_INDEX_TABLE}, ?, ?, ?, ?) AS bm25_score
         FROM {FTS_INDEX_TABLE}
         JOIN knowledge_units k ON k.unit_rowid = {FTS_INDEX_TABLE}.rowid
+        JOIN {FTS_CONTENT_TABLE} c ON c.unit_rowid = k.unit_rowid
         WHERE {FTS_INDEX_TABLE} MATCH ?{filter_sql}
-        ORDER BY bm25_score, k.unit_rowid
-        LIMIT ?
     """
     rows = conn.execute(sql, params).fetchall()
-    return [(row["unit_rowid"], float(row["bm25_score"])) for row in rows]
+    return [dict(row) for row in rows]
 
 
-def _short_retrieve(
+def _short_candidates(
     conn: sqlite3.Connection,
     short_terms: list[str],
     query: RetrievalQuery,
-) -> list[tuple[int, float]]:
-    """All-short path: deterministic literal substring over the materialized
-    FTS content table. Weighted short score, higher is better."""
+) -> list[dict[str, Any]]:
+    """All candidates on the all-short path: deterministic literal substring
+    over the materialized FTS content table, NO LIMIT."""
     score_params: list[Any] = []
     condition_params: list[Any] = []
     score_sql = _short_score_sql(short_terms, score_params)
     condition_sql = _short_condition_sql(short_terms, condition_params)
     params: list[Any] = score_params + condition_params
     filter_sql = _build_filter_sql(query, params)
-    params.append(query.top_k)
     sql = f"""
-        SELECT k.unit_rowid AS unit_rowid, ({score_sql}) AS short_score
+        SELECT {", ".join(_CANDIDATE_COLS)},
+               ({score_sql}) AS short_score
         FROM {FTS_CONTENT_TABLE} c
         JOIN knowledge_units k ON k.unit_rowid = c.unit_rowid
         WHERE {condition_sql}{filter_sql}
-        ORDER BY short_score DESC, k.unit_rowid
-        LIMIT ?
     """
     rows = conn.execute(sql, params).fetchall()
-    return [(row["unit_rowid"], float(row["short_score"])) for row in rows]
+    return [dict(row) for row in rows]
 
 
-def _mixed_retrieve(
+def _mixed_candidates(
     conn: sqlite3.Connection,
     long_terms: list[str],
     short_terms: list[str],
     query: RetrievalQuery,
-) -> list[tuple[int, float]]:
-    """Mixed path: FTS constrains the long terms; structured substring
-    conditions additionally require every short term to match content. AND
-    semantics. Ranking stays raw BM25 (lower is better)."""
+) -> list[dict[str, Any]]:
+    """All candidates on the mixed path: FTS constrains the long terms and
+    structured substring conditions require every short term to match content.
+    AND semantics, NO LIMIT."""
     field_weights = [FTS_FIELD_WEIGHTS[col] for col in FTS_COLUMNS]
     params: list[Any] = list(field_weights)
     match_sql = _fts_match_sql(long_terms)
@@ -478,51 +623,212 @@ def _mixed_retrieve(
     condition_sql = _short_condition_sql(short_terms, condition_params)
     params.extend(condition_params)
     filter_sql = _build_filter_sql(query, params)
-    params.append(query.top_k)
     sql = f"""
-        SELECT k.unit_rowid AS unit_rowid,
+        SELECT {", ".join(_CANDIDATE_COLS)},
                bm25({FTS_INDEX_TABLE}, ?, ?, ?, ?) AS bm25_score
         FROM {FTS_INDEX_TABLE}
         JOIN knowledge_units k ON k.unit_rowid = {FTS_INDEX_TABLE}.rowid
         JOIN {FTS_CONTENT_TABLE} c ON c.unit_rowid = k.unit_rowid
         WHERE {FTS_INDEX_TABLE} MATCH ?
           AND {condition_sql}{filter_sql}
-        ORDER BY bm25_score, k.unit_rowid
-        LIMIT ?
     """
     rows = conn.execute(sql, params).fetchall()
-    return [(row["unit_rowid"], float(row["bm25_score"])) for row in rows]
+    return [dict(row) for row in rows]
 
 
 # ----------------------------------------------------------------------
-# Match info (deterministic field-content explanation)
+# Field-match signals (deterministic literal field-content explanation)
 # ----------------------------------------------------------------------
 
 
-def _compute_match_info(
+def _compute_field_match_stats(
     terms: list[str],
+    normalized_query: str,
     content_row: dict[str, Any],
-) -> tuple[list[str], list[str]]:
-    """Determine matched_fields / matched_terms by deterministic literal
-    field-content checks (no model, no fuzzy). Case-insensitive for ASCII
-    via ``.lower()`` (CJK is identity)."""
-    values = {col: str(content_row[col] or "") for col in _SHORT_FIELDS}
-    matched_fields: list[str] = []
-    matched_terms: list[str] = []
-    for term in terms:
-        lower_term = term.lower()
-        if any(lower_term in values[col].lower() for col in _SHORT_FIELDS):
-            matched_terms.append(term)
-    for col in _SHORT_FIELDS:
-        lower_value = values[col].lower()
-        if any(term.lower() in lower_value for term in terms):
-            matched_fields.append(col)
-    return matched_fields, matched_terms
+) -> dict[str, Any]:
+    """Deterministic literal field-match stats for a candidate.
+
+    Returns (no model, no fuzzy):
+
+    - ``matched_on`` / ``matched_terms`` (M5-03 compatible)
+    - per-field boolean flags ``statement_match`` / ``entity_match`` /
+      ``topic_match`` / ``evidence_match``
+    - exact-phrase flags for every content field (full normalized query as a
+      contiguous literal substring, ASCII case-insensitive via ``lower()``)
+    - ``matched_term_count`` / ``total_term_count`` / ``term_coverage``
+    - ``evidence_only_match`` (no statement/entity/topic match, but evidence)
+    """
+    values = {col: str(content_row.get(col) or "") for col in _SHORT_FIELDS}
+    lower_values = {col: values[col].lower() for col in _SHORT_FIELDS}
+    lower_terms = [term.lower() for term in terms]
+
+    matched_terms = [
+        term for term, lterm in zip(terms, lower_terms)
+        if any(lterm in lower_values[col] for col in _SHORT_FIELDS)
+    ]
+    matched_fields = [
+        col for col in _SHORT_FIELDS
+        if any(lterm in lower_values[col] for lterm in lower_terms)
+    ]
+
+    field_flags = {
+        "statement_match": "statement" in matched_fields,
+        "entity_match": "entity_names" in matched_fields,
+        "topic_match": "topics" in matched_fields,
+        "evidence_match": "evidence_excerpts" in matched_fields,
+    }
+
+    query_lower = normalized_query.lower()
+    exact_flags = {
+        "exact_statement_phrase": bool(query_lower) and query_lower in lower_values["statement"],
+        "exact_entity_phrase": bool(query_lower) and query_lower in lower_values["entity_names"],
+        "exact_topic_phrase": bool(query_lower) and query_lower in lower_values["topics"],
+        "exact_evidence_phrase": bool(query_lower) and query_lower in lower_values["evidence_excerpts"],
+    }
+
+    total_term_count = len(terms)
+    matched_term_count = len(matched_terms)
+    term_coverage = (matched_term_count / total_term_count) if total_term_count else 1.0
+
+    evidence_only_match = bool(
+        field_flags["evidence_match"]
+        and not (field_flags["statement_match"] or field_flags["entity_match"] or field_flags["topic_match"])
+    )
+
+    return {
+        "matched_on": matched_fields,
+        "matched_terms": matched_terms,
+        **field_flags,
+        **exact_flags,
+        "matched_term_count": matched_term_count,
+        "total_term_count": total_term_count,
+        "term_coverage": term_coverage,
+        "evidence_only_match": evidence_only_match,
+    }
+
+
+# ----------------------------------------------------------------------
+# Deterministic ranking policy (lexical-ranking-v1)
+# ----------------------------------------------------------------------
+
+
+def _fts_ranking_key(stats: dict[str, Any], raw_bm25: float, unit_rowid: int) -> tuple:
+    """Lexicographic key for the FTS / mixed paths (ascending sort).
+
+    Order (explainable, conservative):
+      1. evidence-only tier: hits matching statement/entity/topic rank before
+         evidence-only hits (an evidence-only accidental match never outranks
+         a real field match).
+      2. exact statement phrase
+      3. statement_match
+      4. entity_match
+      5. topic_match
+      6. term_coverage (>= 1.0 invariant; present for completeness)
+      7. raw_bm25 (LOWER IS BETTER — BM25 semantics preserved)
+      8. unit_rowid (stable final tie-break)
+    """
+    evidence_tier = 1 if stats["evidence_only_match"] else 0
+    return (
+        evidence_tier,
+        -1 if stats["exact_statement_phrase"] else 0,
+        -1 if stats["statement_match"] else 0,
+        -1 if stats["entity_match"] else 0,
+        -1 if stats["topic_match"] else 0,
+        -1.0 * stats["term_coverage"],
+        float(raw_bm25),
+        int(unit_rowid),
+    )
+
+
+def _short_ranking_key(stats: dict[str, Any], short_score: float, unit_rowid: int) -> tuple:
+    """Lexicographic key for the short path (ascending sort).
+
+    The weighted substring score stays PRIMARY (higher is better — statement
+    5 / entity 2 / topic 2 / evidence 1 already encode field priority); exact
+    phrase and term coverage are deterministic tie-breaks; unit_rowid is the
+    stable final tie-break.
+    """
+    return (
+        -1.0 * float(short_score),
+        -1 if stats["exact_statement_phrase"] else 0,
+        -1.0 * stats["term_coverage"],
+        int(unit_rowid),
+    )
+
+
+def _ranking_components(method: str, stats: dict[str, Any], score: float, unit_rowid: int) -> dict[str, Any]:
+    """JSON-safe breakdown of the ranking key for diagnostics."""
+    if method == RETRIEVAL_METHOD_SHORT:
+        return {
+            "weighted_substring_score": float(score),
+            "exact_statement_phrase": bool(stats["exact_statement_phrase"]),
+            "term_coverage": float(stats["term_coverage"]),
+            "unit_rowid": int(unit_rowid),
+        }
+    return {
+        "evidence_only_tier": 1 if stats["evidence_only_match"] else 0,
+        "exact_statement_phrase": bool(stats["exact_statement_phrase"]),
+        "statement_match": bool(stats["statement_match"]),
+        "entity_match": bool(stats["entity_match"]),
+        "topic_match": bool(stats["topic_match"]),
+        "term_coverage": float(stats["term_coverage"]),
+        "raw_bm25": float(score),
+        "unit_rowid": int(unit_rowid),
+    }
+
+
+def _why_this_hit(stats: dict[str, Any]) -> str:
+    """Deterministic, templated human-readable explanation (never an LLM)."""
+    parts = []
+    for field, key in (
+        ("statement", "statement_match"),
+        ("entities", "entity_match"),
+        ("topics", "topic_match"),
+        ("evidence", "evidence_match"),
+    ):
+        if stats[key]:
+            parts.append(field)
+    if not parts:
+        return "no matched field (invariant violation)"
+    return "matched query terms in " + " and ".join(parts)
+
+
+def check_retrieval_invariant(result: RetrievalResult) -> list[str]:
+    """Return the list of term-coverage invariant violations in a result.
+
+    Under AND semantics every accepted hit must match every required term
+    (``term_coverage == 1.0``). An empty list means the invariant holds.
+    """
+    violations: list[str] = []
+    for hit in result.hits:
+        coverage = hit.match_info.get("term_coverage")
+        if coverage != 1.0:
+            violations.append(
+                f"hit {hit.rank} ({hit.knowledge_unit_id}): term_coverage={coverage!r} "
+                f"(matched={hit.match_info.get('matched_terms')!r}, "
+                f"total={hit.match_info.get('total_term_count')!r})"
+            )
+    return violations
 
 
 # ----------------------------------------------------------------------
 # Public entrypoint
 # ----------------------------------------------------------------------
+
+
+def _build_limitations(method: str) -> list[str]:
+    """Documented deterministic limitations for the chosen path."""
+    if method == RETRIEVAL_METHOD_SHORT:
+        return [
+            "trigram cannot match terms shorter than 3 characters; "
+            "deterministic literal substring fallback used"
+        ]
+    if method == RETRIEVAL_METHOD_MIXED:
+        return [
+            "short terms constrained via deterministic literal substring "
+            "(trigram <3-character limitation)"
+        ]
+    return []
 
 
 def retrieve(db_path: Path | str, query: RetrievalQuery | dict[str, Any]) -> RetrievalResult:
@@ -531,36 +837,131 @@ def retrieve(db_path: Path | str, query: RetrievalQuery | dict[str, Any]) -> Ret
     ``query`` may be a ``RetrievalQuery`` or a JSON-safe dict (auto-coerced via
     ``RetrievalQuery.from_dict``). Opens the store read-only for the duration
     of the call; callers never touch the sqlite Connection directly.
+
+    M5-04: the query plan is deterministic; candidate SQL runs WITHOUT LIMIT,
+    ranking applies the ``lexical-ranking-v1`` lexicographic policy in Python,
+    then ``top_k`` is sliced. ``candidate_count_before_limit`` reports the
+    filtered candidate count; ``result_count <= top_k``.
     """
     if isinstance(query, dict):
         query = RetrievalQuery.from_dict(query)
     if not isinstance(query, RetrievalQuery):
         raise TypeError("query must be a RetrievalQuery (or a dict thereof)")
 
-    normalized = normalize_retrieval_query(query.query_text)
-    if not normalized:
-        raise ValueError("query_text is empty after normalization")
-    terms = plan_literal_terms(normalized)
-    long_terms = [t for t in terms if len(t) >= 3]
-    short_terms = [t for t in terms if len(t) <= 2]
+    plan = build_query_plan(query)
+    method = {
+        RETRIEVAL_PATH_FTS: RETRIEVAL_METHOD_FTS,
+        RETRIEVAL_PATH_SHORT: RETRIEVAL_METHOD_SHORT,
+        RETRIEVAL_PATH_MIXED: RETRIEVAL_METHOD_MIXED,
+    }[plan.retrieval_path]
 
     conn = open_store(Path(db_path))
     try:
         revision = compute_store_revision(Path(db_path), conn)
-        if long_terms and not short_terms:
-            method = RETRIEVAL_METHOD_FTS
-            rows = _fts_retrieve(conn, long_terms, query)
-        elif short_terms and not long_terms:
-            method = RETRIEVAL_METHOD_SHORT
-            rows = _short_retrieve(conn, short_terms, query)
+        if method == RETRIEVAL_METHOD_FTS:
+            candidates = _fts_candidates(conn, plan.long_terms, query)
+        elif method == RETRIEVAL_METHOD_SHORT:
+            candidates = _short_candidates(conn, plan.short_terms, query)
         else:
-            method = RETRIEVAL_METHOD_MIXED
-            rows = _mixed_retrieve(conn, long_terms, short_terms, query)
+            candidates = _mixed_candidates(conn, plan.long_terms, plan.short_terms, query)
+
+        candidate_count = len(candidates)
+
+        ranked: list[tuple[tuple, dict[str, Any], dict[str, Any]]] = []
+        for cand in candidates:
+            unit_rowid = int(cand["unit_rowid"])
+            stats = _compute_field_match_stats(plan.terms, plan.normalized_query, cand)
+            if method == RETRIEVAL_METHOD_SHORT:
+                key = _short_ranking_key(stats, float(cand["short_score"]), unit_rowid)
+            else:
+                key = _fts_ranking_key(stats, float(cand["bm25_score"]), unit_rowid)
+            ranked.append((key, cand, stats))
+        ranked.sort(key=lambda item: item[0])
+
+        top = ranked[: query.top_k]
 
         asset_cache: dict[str, dict[str, Any]] = {}
-        hits = []
-        for rank, (unit_rowid, score) in enumerate(rows, start=1):
-            hits.append(_build_hit(conn, rank, unit_rowid, score, query, method, long_terms, short_terms, asset_cache))
+        hits: list[RetrievalHit] = []
+        for rank, (key, cand, stats) in enumerate(top, start=1):
+            unit_rowid = int(cand["unit_rowid"])
+            if method == RETRIEVAL_METHOD_SHORT:
+                score = float(cand["short_score"])
+                ranking_diagnostics = {
+                    "method": method,
+                    "ranking_policy_version": RANKING_POLICY_VERSION,
+                    "rank": rank,
+                    "weighted_substring_score": score,
+                    "score_direction": "higher_is_better",
+                    "matched_fields": list(stats["matched_on"]),
+                    "ranking_components": _ranking_components(method, stats, score, unit_rowid),
+                    "why_this_hit": _why_this_hit(stats),
+                }
+            else:
+                score = float(cand["bm25_score"])
+                ranking_diagnostics = {
+                    "method": method,
+                    "ranking_policy_version": RANKING_POLICY_VERSION,
+                    "rank": rank,
+                    "raw_bm25": score,
+                    "bm25_direction": "lower_is_better",
+                    "field_weights": dict(FTS_FIELD_WEIGHTS),
+                    "ranking_components": _ranking_components(method, stats, score, unit_rowid),
+                    "why_this_hit": _why_this_hit(stats),
+                }
+                if method == RETRIEVAL_METHOD_MIXED:
+                    ranking_diagnostics["long_terms"] = list(plan.long_terms)
+                    ranking_diagnostics["short_terms"] = list(plan.short_terms)
+                    ranking_diagnostics["short_term_matches"] = [
+                        term for term in plan.short_terms if term.lower() in {
+                            str(cand.get(col) or "").lower() for col in _SHORT_FIELDS
+                        }
+                    ]
+            hits.append(
+                _build_hit(
+                    conn,
+                    rank,
+                    unit_rowid,
+                    query,
+                    method,
+                    plan.long_terms,
+                    plan.short_terms,
+                    stats,
+                    ranking_diagnostics,
+                    asset_cache,
+                )
+            )
+
+        result = RetrievalResult(
+            query=query,
+            retrieval_method=method,
+            store_schema_version=STORE_SCHEMA_VERSION,
+            store_revision=revision,
+            result_count=len(hits),
+            hits=hits,
+            diagnostics={},
+        )
+        invariant_violations = check_retrieval_invariant(result)
+        if invariant_violations:
+            raise RetrievalInvariantError(
+                "accepted hit with term_coverage < 1.0 (required term missing); "
+                f"violations={invariant_violations}"
+            )
+
+        diagnostics: dict[str, Any] = {
+            "query_plan": plan.to_dict(),
+            "normalized_query": plan.normalized_query,
+            "terms": list(plan.terms),
+            "long_terms": list(plan.long_terms),
+            "short_terms": list(plan.short_terms),
+            "retrieval_path": plan.retrieval_path,
+            "filters_applied": _applied_filters(query),
+            "candidate_count_before_limit": candidate_count,
+            "result_count": len(hits),
+            "top_k": query.top_k,
+            "short_query_fallback": bool(plan.short_terms),
+            "ranking_policy_version": RANKING_POLICY_VERSION,
+            "limitations": _build_limitations(method),
+        }
 
         return RetrievalResult(
             query=query,
@@ -569,13 +970,7 @@ def retrieve(db_path: Path | str, query: RetrievalQuery | dict[str, Any]) -> Ret
             store_revision=revision,
             result_count=len(hits),
             hits=hits,
-            diagnostics={
-                "normalized_query": normalized,
-                "terms": terms,
-                "long_terms": long_terms,
-                "short_terms": short_terms,
-                "short_query_fallback": bool(short_terms),
-            },
+            diagnostics=diagnostics,
         )
     finally:
         conn.close()
@@ -584,14 +979,6 @@ def retrieve(db_path: Path | str, query: RetrievalQuery | dict[str, Any]) -> Ret
 # ----------------------------------------------------------------------
 # Hit hydration (canonical payload -> full provenance)
 # ----------------------------------------------------------------------
-
-
-def _load_content_row(conn: sqlite3.Connection, unit_rowid: int) -> dict[str, Any]:
-    row = conn.execute(
-        f"SELECT * FROM {FTS_CONTENT_TABLE} WHERE unit_rowid = ?",
-        (unit_rowid,),
-    ).fetchone()
-    return dict(row)
 
 
 def _asset_metadata(conn: sqlite3.Connection, canonical_id: str, cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -614,11 +1001,12 @@ def _build_hit(
     conn: sqlite3.Connection,
     rank: int,
     unit_rowid: int,
-    score: float,
     query: RetrievalQuery,
     method: str,
     long_terms: list[str],
     short_terms: list[str],
+    stats: dict[str, Any],
+    ranking_diagnostics: dict[str, Any],
     _asset_cache: Optional[dict[str, dict[str, Any]]] = None,
 ) -> RetrievalHit:
     row = conn.execute(
@@ -627,34 +1015,6 @@ def _build_hit(
     ).fetchone()
     payload = json.loads(row["canonical_payload_json"])
     unit = CanonicalKnowledgeUnit.from_dict(payload)
-
-    content_row = _load_content_row(conn, unit_rowid)
-    terms = long_terms + short_terms
-    matched_fields, matched_terms = _compute_match_info(terms, content_row)
-
-    if method == RETRIEVAL_METHOD_FTS:
-        ranking_diagnostics = {
-            "method": method,
-            "raw_bm25": float(score),
-            "field_weights": dict(FTS_FIELD_WEIGHTS),
-            "rank": rank,
-        }
-    elif method == RETRIEVAL_METHOD_SHORT:
-        ranking_diagnostics = {
-            "method": method,
-            "weighted_substring_score": float(score),
-            "matched_fields": matched_fields,
-            "rank": rank,
-        }
-    else:
-        ranking_diagnostics = {
-            "method": method,
-            "long_terms": list(long_terms),
-            "short_terms": list(short_terms),
-            "raw_bm25": float(score),
-            "field_weights": dict(FTS_FIELD_WEIGHTS),
-            "rank": rank,
-        }
 
     cache = _asset_cache if _asset_cache is not None else {}
     source_artifact = _asset_metadata(conn, unit.canonical_id, cache)
@@ -674,8 +1034,20 @@ def _build_hit(
         extraction_lineage=unit.extraction_lineage,
         source_artifact=source_artifact,
         match_info={
-            "matched_on": matched_fields,
-            "matched_terms": matched_terms,
+            "matched_on": list(stats["matched_on"]),
+            "matched_terms": list(stats["matched_terms"]),
+            "term_coverage": float(stats["term_coverage"]),
+            "matched_term_count": int(stats["matched_term_count"]),
+            "total_term_count": int(stats["total_term_count"]),
+            "statement_match": bool(stats["statement_match"]),
+            "entity_match": bool(stats["entity_match"]),
+            "topic_match": bool(stats["topic_match"]),
+            "evidence_match": bool(stats["evidence_match"]),
+            "exact_statement_phrase": bool(stats["exact_statement_phrase"]),
+            "exact_entity_phrase": bool(stats["exact_entity_phrase"]),
+            "exact_topic_phrase": bool(stats["exact_topic_phrase"]),
+            "exact_evidence_phrase": bool(stats["exact_evidence_phrase"]),
+            "evidence_only_match": bool(stats["evidence_only_match"]),
         },
         ranking_diagnostics=ranking_diagnostics,
     )

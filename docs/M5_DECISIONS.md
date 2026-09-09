@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`, M5-03 = `DONE`; M5-04 next)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`, M5-03 = `DONE`, M5-04 = `DONE`; M5-05 next)
 > **Status**: APPROVED / ACTIVE
 > **Context**: M4 is COMPLETE/SEALED (`knowledge_units.json` schema `knowledge-units-v1`). M5 builds a derived, rebuildable, queryable Knowledge Store with a lexical retrieval contract, offline and deterministic.
 
@@ -269,3 +269,61 @@
 - **Decision**:
   - Every retrieval path orders by its score then a stable tie-break on `unit_rowid` ASC, so results are fully deterministic across calls and processes.
   - M5-03 introduces **no persistent retrieval cache** (no `retrieval_cache` table, no Redis, no disk query cache); SQLite retrieval is fast enough at this scale.
+## Decision 30: M5-04 Ranking Policy = `lexical-ranking-v1` (Deterministic Lexicographic)
+- **Context**: M5-03 already implements structured filters, BM25 ranking and diagnostics. M5-04 hardens the ranking into an explicit, frozen, explainable policy and upgrades the diagnostics contract. No learned reranker, no LLM scoring, no embeddings, no semantic similarity (all deferred per M5-00).
+- **Decision**:
+  - Freeze ranking policy version **`lexical-ranking-v1`**; it is recorded in `RetrievalResult.diagnostics.ranking_policy_version` and in every `RetrievalHit.ranking_diagnostics.ranking_policy_version`. Any future ranking change must bump this version and be documented here.
+  - The policy is a **lexicographic ranking key** (never a normalized weighted sum, never a fake 0-1 relevance probability). Each component is independently preserved in `ranking_components` for explainability.
+  - FTS / mixed paths sort ASC by: `(evidence_only_tier, exact_statement_phrase DESC, statement_match DESC, entity_match DESC, topic_match DESC, term_coverage DESC, raw_bm25 ASC, unit_rowid ASC)`. `evidence_only_tier` is 1 only when a hit matches no statement/entity/topic field (an accidental long-excerpt match never outranks a real field match). BM25 stays LOWER-IS-BETTER and is never negated or re-normalized.
+  - Short path keeps `weighted_substring_score` PRIMARY (HIGHER-IS-BETTER) with `exact_statement_phrase` and `term_coverage` as deterministic tie-breaks, then `unit_rowid` ASC. Short and BM25 scores are never compared across methods.
+  - `unit_rowid` ASC is the universal final tie-break.
+
+---
+
+## Decision 31: QueryPlan = Deterministic JSON-Safe Query Description
+- **Context**: M5-04 must be able to answer "how was this query parsed and which path ran" without leaking SQL.
+- **Decision**:
+  - New public read-only dataclass `QueryPlan` (frozen, `to_dict`/`from_dict`): `original_query`, `normalized_query`, `terms`, `long_terms`, `short_terms`, `retrieval_path` (one of `fts_trigram` / `substring_short` / `fts_trigram_with_short_filter`), `filters` (only caller-provided values), `top_k`.
+  - Built by `build_query_plan(query)` from the validated `RetrievalQuery`. It is deterministic and JSON-safe; it never exposes SQL strings.
+  - `RetrievalResult.diagnostics.query_plan` embeds `plan.to_dict()`.
+
+---
+
+## Decision 32: Upgraded Retrieval Diagnostics (Stable Structure)
+- **Context**: M5-03 diagnostics was a small dict; M5-04 makes it a stable, auditable structure.
+- **Decision**:
+  - `RetrievalResult.diagnostics` always records: `query_plan`, `normalized_query`, `terms`, `long_terms`, `short_terms`, `retrieval_path`, `filters_applied` (exact caller-provided filter values; never auto-inferred), `candidate_count_before_limit`, `result_count`, `top_k`, `short_query_fallback`, `ranking_policy_version`, `limitations`.
+  - `candidate_count_before_limit` is the number of rows passing query+filters BEFORE `LIMIT` (a candidate query runs without LIMIT; ranking is applied in Python, then `top_k` is sliced). It may exceed `result_count` (which is always `<= top_k`). No canonical payloads are pulled for counting.
+  - `limitations` is a deterministic list documenting path-specific constraints (e.g. the trigram <3-character short-term fallback).
+
+---
+
+## Decision 33: Field-Match Signals, Exact Phrase & Term Coverage (Match Info)
+- **Context**: Hits must explain which fields/terms matched without pretending semantic relevance.
+- **Decision**:
+  - `match_info` (backward-compatible extension of M5-03 `{matched_on, matched_terms}`) adds: `statement_match`, `entity_match`, `topic_match`, `evidence_match`, `exact_statement_phrase` / `exact_entity_phrase` / `exact_topic_phrase` / `exact_evidence_phrase` (full normalized query as a contiguous literal substring, ASCII case-insensitive), `matched_term_count`, `total_term_count`, `term_coverage`, `evidence_only_match`.
+  - Matching is literal and deterministic only: no fuzzy matching, no alias inference, no embeddings.
+  - **Term-coverage invariant**: under AND semantics every accepted hit must match every required term (`term_coverage == 1.0`). `check_retrieval_invariant(result)` returns violations; `retrieve` raises `RetrievalInvariantError` if any accepted hit violates the invariant. An evidence-only hit is NOT removed — it is surfaced with `evidence_only_match = true` for downstream RAG/agent consumers.
+
+---
+
+## Decision 34: No Content-Based Penalties, No Confidence/Verification Boost
+- **Context**: M4 contains a few low-value meta/announcement units; `extraction_confidence` and `verification_status` exist on units.
+- **Decision**:
+  - M5-04 applies NO content-specific hard-coded penalties (no "if statement mentions 本期视频 then demote"). Quality signals are a future evaluation concern, designed separately.
+  - `extraction_confidence` (extraction quality) and `verification_status` are NEVER used as lexical ranking boosts. They are returned to callers / available as filters only. Tests assert confidence/verification do not change rank.
+
+---
+
+## Decision 35: Ranking Explainability = Templated, Never an LLM
+- **Context**: Users should be able to ask "why is hit #1 before hit #2?" and get a deterministic answer.
+- **Decision**:
+  - Every hit's `ranking_diagnostics` records: `method`, `ranking_policy_version`, `rank`, score + direction (`raw_bm25`+`bm25_direction="lower_is_better"` for FTS/mixed; `weighted_substring_score`+`score_direction="higher_is_better"` for short; `short_term_matches` for mixed), `ranking_components` (the exact JSON-safe lexicographic key components), and a templated `why_this_hit` string ("matched query terms in statement and entities"). No natural-language reasoning engine, no LLM.
+
+---
+
+## Decision 36: Query & Candidate SQL Are Never Exposed; No N+1 Diagnostics
+- **Context**: Diagnostics must not leak implementation, and must not run dozens of SQL statements per hit.
+- **Decision**:
+  - All diagnostics are JSON-safe (no sqlite Row, set, Enum repr, Path, Connection). Tests assert serialization safety and that no SQL/MATCH text appears in result payloads.
+  - Candidate retrieval uses query-level SQL (a single candidate query returning score + content fields, no LIMIT) plus limited canonical hydration for the top-k hits only; `candidate_count_before_limit` needs no extra payload fetch. No per-hit diagnostic query loops.
