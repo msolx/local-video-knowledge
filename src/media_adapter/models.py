@@ -253,4 +253,25 @@ class CanonicalMediaAsset:
         from src.provenance import write_evidence_manifest
         return write_evidence_manifest(self, config=config, processed_dir=processed_dir, force=force)
 
+    def chunk_evidence(
+        self,
+        config: AppConfig | None = None,
+        policy: Any | None = None,
+        force: bool = False,
+        processed_dir: Path | None = None,
+    ) -> Path:
+        """Chunks verified evidence manifest into deterministic, grounded Evidence Chunks (M3-05).
+
+        Guarantees sub-second cache hit on matching fingerprint, 100% unique evidence coverage,
+        and strict formal archive immutability.
+        """
+        from src.chunking import write_evidence_chunks
+        return write_evidence_chunks(
+            self,
+            config=config,
+            policy=policy,
+            force=force,
+            processed_dir=processed_dir,
+        )
+
 

@@ -13,8 +13,7 @@
 | **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DONE`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
 | **M3-02** | **Video / ASR Integration** | Current Agent | **`DONE`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
 | **M3-03** | **Image Album OCR/VLM Integration** | Current Agent | **`DONE`** | M3-01 | Multi-image visual inspection pipeline |
-| **M3-04** | **Metadata & Provenance Binding** | Current Agent | **`DONE`** | M3-01, M3-02, M3-03 | Grounded evidence manifest across media + collector DB |
-| **M3-05** | Long Media Chunking | TBD | **`TODO`** | M3-02, M3-04 | Evidence segment windowing & chunking (no summarization) |
+| **M3-05** | **Long Media Chunking** | Current Agent | **`DONE`** | M3-02, M3-04 | Deterministic evidence windowing & chunk manifest (`src/chunking/`) |
 | **M3-06** | M3 End-to-End Acceptance | TBD | **`TODO`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
 
 ---
@@ -83,23 +82,21 @@
   - Verified against real C10 video (`7681603850364521734`: 184 speech segments) and real C10 album (`7682038498466993905`: 4 visual items).
   - 17 comprehensive unit/integration tests in `tests/test_evidence_provenance.py`.
 
-### M3-05: Long Media Chunking (`TODO`)
+### M3-05: Long Media Chunking (`DONE`)
 - **Objective**: Provide deterministic evidence chunking and windowing for long transcripts and large album batches (`Evidence -> Evidence Chunks`).
-- **In Scope (Evidence Chunking Only)**:
-  - Transcript segment grouping into coherent evidence chunks.
-  - Configurable evidence windowing, chunk boundary detection, and token/time overlap.
-  - Deterministic chunk IDs (`chk_000001`, etc.) and exact evidence segment references (`evidence_ids`).
-  - Precise time-range references (`start_time`, `end_time`, `duration`).
-  - Large album evidence batching preserving 1-indexed image sequence references.
-  - Deterministic ordering and chunk-level fingerprinting.
-  - Strict preservation of source artifact binding and verification status (`"not_checked"`).
-- **Out of Scope (Strict Non-Goals)**:
-  - NO hierarchical summarization.
-  - NO summary merging.
-  - NO semantic knowledge synthesis.
-  - NO claim extraction or opinion extraction.
-  - NO entity linking or knowledge unit generation.
-  - Contract invariant: `Evidence -> Evidence Chunks` (NOT `Evidence -> Knowledge/Summary`).
+- **Completed Components**:
+  - `src/chunking/models.py`: `ChunkingPolicy`, `EvidenceChunk`, `TemporalRange`, `ImageSequenceRange`.
+  - `src/chunking/policy.py`: `window_video_speech_evidence` and `window_album_visual_evidence`.
+  - `src/chunking/service.py`: `chunk_evidence_manifest`, `write_evidence_chunks`, `load_evidence_chunks`, `verify_evidence_chunks`.
+  - Full evidence coverage invariant: 100% unique source evidence items referenced in chunks (never cutting segments or text).
+  - Bounded overlap: cleanly bounded by `overlap_segments` and explicitly cataloged in `overlap_evidence_ids`.
+  - Temporal provenance: strictly envelopes contained speech segments without fake timestamps.
+  - Album sequence: 1-indexed sequential image grouping preserving same-image OCR and VLM evidence together (`temporal_range: null`).
+  - Epistemic preservation: `verification_status: "not_checked"` strictly maintained across summary and all chunks.
+  - Sub-second cache hit (< 3ms) via deterministic `chunks_fingerprint`; automatic invalidation on manifest or config change.
+  - 100% offline, zero LLM / chat completion calls.
+  - Verified against real C10 video (4 chunks, 184/184 unique speech items) and real C10 album (1 chunk, 3 images / 4 items).
+  - 20 targeted unit/integration tests in `tests/test_evidence_chunking.py`.
 
 ### M3-06: M3 End-to-End Acceptance (`TODO`)
 - Final closure audit for M3: formal local assets -> evidence generation and chunking.

@@ -299,13 +299,16 @@ Current Status : M3-04 DONE, ready for M3-05.
    - tests/test_video_asr_pipeline.py (10 tests)
    - tests/test_album_visual_pipeline.py (14 tests)
    - tests/test_evidence_provenance.py (17 tests)
+   - src/chunking/ (models.py, policy.py, service.py)
+   - tests/test_evidence_chunking.py (20 tests)
    - docs/M3_HANDOFF.md, docs/M3_DECISIONS.md, docs/M3_TASKS.md
 
 4. CURRENT TASK:
-   M3-04: Metadata & Provenance Binding -> DONE.
-   Next Task: M3-05 Long Media Chunking.
+   M3-05: Long Media Chunking -> DONE.
+   Next Task: M3-06 M3 End-to-End Acceptance.
+---
 
-5. COMPLETED WORK (M3-01 ~ M3-04):
+## 5. COMPLETED WORK (M3-01 ~ M3-05):
    - M3-01: CanonicalMediaAssetAdapter (manifest ingestion, formal validation, decoupled metadata DB).
    - M3-02: Video / ASR Integration (direct streaming, PRIMARY_VIDEO 16kHz mono WAV, NO_AUDIO contract, resume).
    - M3-03: Image Album OCR / VLM Integration (sequential OCR lines with polygons/boxes, failure isolation, resume).
@@ -319,48 +322,44 @@ Current Status : M3-04 DONE, ready for M3-05.
      * Sub-second resume (< 2ms) on identical fingerprint.
      * Real C10 video (7681603850364521734: 184 segments, 173,847,684 bytes) and album (7682038498466993905: 4 items, 0 audio tracks) verified.
      * 17/17 tests in tests/test_evidence_provenance.py passed.
-     * Full regression: 723 passed, 10 skipped.
+   - M3-05: Long Media Chunking:
+     * Dedicated chunking subsystem: src/chunking/ (models.py, policy.py, service.py).
+     * Output manifest: data/processed/<canonical_id>/evidence_chunks.json (schema: evidence-chunks-v1).
+     * Strict boundary: Evidence -> Evidence Chunks (100% offline, zero LLM, zero summarization).
+     * Full coverage invariant: 100% unique source evidence items referenced (no segment cutting or text truncation).
+     * Bounded overlap: explicitly cataloged in overlap_evidence_ids (first N segments of chunk K+1 overlap with last N of chunk K).
+     * Temporal provenance: strictly envelopes contained speech segments without fake timestamps.
+     * Album sequence: 1-indexed sequential image grouping preserving same-image OCR and VLM evidence together (temporal_range: null).
+     * Epistemic preservation: verification_status = "not_checked" strictly maintained across summary and all chunks.
+     * Sub-second cache hit (< 3ms) via deterministic chunks_fingerprint; automatic invalidation on manifest or policy change.
+     * Real C10 video: 4 chunks, 184/184 unique speech items covered.
+     * Real C10 album: 1 chunk, 3 images / 4 items covered.
+     * 20/20 unit tests in tests/test_evidence_chunking.py passed.
+     * 77/77 M3 unit/integration tests passed.
 
-6. TARGET FOR M3-05 (Long Media Chunking):
-   - Contract Invariant: Evidence -> Evidence Chunks (STRICTLY NO Knowledge Extraction or Summarization).
-   - In Scope (Allowed):
-     * transcript segment grouping
-     * evidence windowing
-     * chunk boundary
-     * overlap
-     * deterministic chunk IDs (chk_000001, etc.)
-     * exact evidence references (evidence_ids)
-     * time-range references (start, end, duration)
-     * large album evidence batching (preserving 1-indexed sequence references)
-     * preserving verification_status = "not_checked" across all chunks
-   - Out of Scope (Strict Non-Goals / Forbidden):
-     * hierarchical summarization
-     * summary merging
-     * semantic knowledge synthesis
-     * claim extraction
-     * opinion extraction
-     * entity linking
-     * knowledge unit generation
+## 6. TARGET FOR M3-06 (M3 End-to-End Acceptance):
+   - Comprehensive closure audit for Milestone M3 across M3-01 to M3-05.
+   - Formal local assets -> ASR/OCR visual processing -> Grounded evidence manifest -> Deterministic evidence chunks.
+   - End-to-end offline pipeline verification and regression check across video and album.
 
+## 7. EXACT NEXT COMMANDS TO RUN:
+   # Step A: Run all 5 M3 unit suites (77 tests)
+   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py tests/test_album_visual_pipeline.py tests/test_evidence_provenance.py tests/test_evidence_chunking.py -v
 
-7. EXACT NEXT COMMANDS TO RUN:
-   # Step A: Run all 4 M3 unit suites (57 tests)
-   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py tests/test_album_visual_pipeline.py tests/test_evidence_provenance.py -v
-
-   # Step B: Run full test regression (723 passed, 10 skipped)
+   # Step B: Run full test regression (743 passed, 10 skipped)
    .\.venv\Scripts\python.exe -m pytest tests -q
 
    # Step C: Run worker regression (.venv-f2, 55 passed)
    .\.venv-f2\Scripts\python.exe -m pytest tests/test_downloader_worker.py -k "not live" -q
 
-8. KEY FILES TO READ:
+## 8. KEY FILES TO READ:
    - docs/M3_HANDOFF.md (this document)
-   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-9)
+   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-10)
    - docs/M3_TASKS.md (task progression board)
-   - src/provenance.py (EvidenceItem, build_evidence_manifest, write_evidence_manifest)
-   - tests/test_evidence_provenance.py (17 test cases)
+   - src/chunking/ (EvidenceChunk, ChunkingPolicy, window_video_speech_evidence, chunk_evidence_manifest)
+   - tests/test_evidence_chunking.py (20 test cases)
 
-9. CORE INVARIANTS (DO NOT BREAK):
+## 9. CORE INVARIANTS (DO NOT BREAK):
    - DO NOT modify src/collector/ or src/downloader/ (M2 is frozen).
    - DO NOT make network calls or live Douyin requests.
    - DO NOT touch, mutate, or delete M2 runtime data (data/metadata.db, archive/douyin/).

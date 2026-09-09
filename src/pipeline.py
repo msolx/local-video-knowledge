@@ -437,11 +437,14 @@ def process_canonical_asset(
             f"Cannot run video pipeline on non-video asset ({content_type}): {getattr(canonical_asset, 'canonical_id', 'unknown')}"
         )
     media_asset = canonical_asset.to_pipeline_media_asset(config)
-    effective_stop = "asr" if stop_after == "evidence" else stop_after
+    effective_stop = "asr" if stop_after in ("evidence", "chunk", "chunks") else stop_after
     result = process_asset(config, media_asset, force=force, stop_after=effective_stop)
-    if stop_after in ("evidence", "asr", None):
+    if stop_after in ("evidence", "asr", "chunk", "chunks", None):
         from .provenance import write_evidence_manifest
         write_evidence_manifest(canonical_asset, config=config, processed_dir=result, force=force)
+    if stop_after in ("chunk", "chunks"):
+        from .chunking import write_evidence_chunks
+        write_evidence_chunks(canonical_asset, config=config, processed_dir=result, force=force)
     return result
 
 
@@ -590,9 +593,12 @@ def process_canonical_album(
             }
 
         _stage(state, state_path, "visual", force, run_album_visual)
-        if stop_after in ("evidence", "visual", None):
+        if stop_after in ("evidence", "visual", "chunk", "chunks", None):
             from .provenance import write_evidence_manifest
             write_evidence_manifest(canonical_asset, config=config, processed_dir=album_dir, force=force)
+        if stop_after in ("chunk", "chunks"):
+            from .chunking import write_evidence_chunks
+            write_evidence_chunks(canonical_asset, config=config, processed_dir=album_dir, force=force)
         return album_dir
 
     finally:

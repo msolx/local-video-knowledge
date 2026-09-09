@@ -40,6 +40,14 @@
     "prompt_version": "knowledge-extraction-v2.3-selective-visual",
     "schema_version": "knowledge-v2.3"
   },
+  "evidence_chunking": {
+    "enabled": true,
+    "max_duration_seconds": 120.0,
+    "max_tokens": 1000,
+    "max_segments": 50,
+    "overlap_segments": 2,
+    "album_images_per_chunk": 5
+  },
   "knowledge": {
     "chunking": { "enabled": true, "max_input_tokens": 10000, "overlap_tokens": 800, "token_estimator": "heuristic_cjk_v1" },
     "lifecycle": {

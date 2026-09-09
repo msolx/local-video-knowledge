@@ -175,4 +175,42 @@
   - *Synthesizing fake `collected_at` timestamps*: Corrupts provenance integrity when `first_seen_at` accurately represents collector observation time.
   - *Writing `evidence_manifest.json` into `archive/`*: Violates M2 formal asset freeze and mixing of raw data with derived intelligence.
 
+---
+
+## Decision 10: Deterministic Evidence Windowing Architecture (M3-05)
+- **Context**: Milestone M3-04 established the canonical grounded evidence index (`data/processed/<canonical_id>/evidence_manifest.json`), mapping formal archive assets and collector metadata to individual model observations (ASR speech segments and OCR/VLM visual frames). To prepare long media (e.g. 370s+ videos with 184 speech segments or large multi-image albums) for downstream processing, continuous evidence must be grouped into bounded, coherent units.
+- **Decision**:
+  - **Dedicated Chunking Subsystem (`src/chunking/`)**:
+    - Created `src/chunking/` with `ChunkingPolicy`, `EvidenceChunk`, `TemporalRange`, `ImageSequenceRange`, `chunk_evidence_manifest()`, `write_evidence_chunks()`, `load_evidence_chunks()`, and `verify_evidence_chunks()`.
+    - Outputs are written exclusively to `data/processed/<canonical_id>/evidence_chunks.json` (schema `evidence-chunks-v1`).
+  - **Strict Scope Boundary: Evidence -> Evidence Chunks (Zero Summarization / No LLM)**:
+    - M3-05 performs **strictly deterministic evidence windowing**, NOT semantic knowledge synthesis, summarization, claim extraction, or opinion extraction.
+    - 100% offline and deterministic: zero LLM inference, zero OpenAI/Gemini/LM Studio chat completion calls.
+  - **Full Evidence Coverage Invariant**:
+    - Every source `EvidenceItem` in `evidence_manifest.json` is guaranteed to be referenced in at least one chunk (100% unique evidence coverage).
+    - An `EvidenceItem` is never cut, truncated, or modified; chunks strictly reference exact `evidence_id`s.
+  - **Deterministic Video Speech Windowing**:
+    - Groups contiguous ASR speech segments according to `ChunkingPolicy` thresholds (`max_duration_seconds: 120.0`, `max_tokens: 1000`, `max_segments: 50`).
+    - Bounded overlap: when `overlap_segments > 0`, the first `N` segments of chunk `K+1` overlap with the last `N` segments of chunk `K`. The overlapping items are strictly and explicitly recorded in `overlap_evidence_ids`.
+    - Temporal range (`start`, `end`, `duration`) strictly envelopes the contained evidence items without synthesizing fake timestamps.
+    - `NO_AUDIO` video handling: videos with 0 speech segments produce 0 chunks (`status: "NO_AUDIO"`), never creating fake empty chunks.
+  - **Deterministic Image Album Batching**:
+    - Groups evidence by image sequence index. OCR (`visual_text`) and VLM (`visual_description`) evidence for the same image strictly remain together in the same image group.
+    - Batches contiguous image groups into chunks up to `album_images_per_chunk: 5`.
+    - Preserves 1-indexed sequential image ordering (`start_index`, `end_index`, `image_count`) with `temporal_range: null`.
+    - Partial and unresolved evidence (e.g. `unresolved_visual_reference`, OCR errors) are strictly preserved in chunk references.
+  - **Epistemic Invariant: `verification_status = "not_checked"`**:
+    - Chunks are aggregations of unverified model evidence.
+    - Summary and all chunks strictly enforce `verification_status: "not_checked"`. Claims of verified truth are forbidden.
+  - **Deterministic Fingerprinting & Sub-Second Idempotency**:
+    - `compute_chunks_fingerprint()` hashes `source_manifest_fingerprint`, canonical `chunking_policy`, and ordered chunk fingerprints.
+    - Repeated runs achieve sub-second cache hit (< 3ms) without recomputation.
+    - Modifying `evidence_manifest.json` or changing any `ChunkingPolicy` threshold immediately invalidates the cache.
+  - **Strict Archive Immutability**:
+    - The formal archive (`archive/`) is 100% read-only.
+- **Rejected Alternatives**:
+  - *Hierarchical summarization or LLM chunk merging*: Violates the M3-05 boundary; summarization is a knowledge stage task, not evidence windowing.
+  - *Splitting raw segment text across chunk boundaries*: Destroys 1:1 traceability back to exact ASR segments and formal archive timestamps.
+  - *Assigning fake timestamps to image albums*: Image albums lack a native time axis; synthesizing fake seconds misrepresents media provenance.
+
 
