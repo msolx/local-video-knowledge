@@ -219,6 +219,8 @@ def test_02_all_speech_evidence_covered(mock_video_manifest: tuple[Path, dict[st
     covered_ids = {eid for c in doc["chunks"] for eid in c["evidence_ids"]}
     assert covered_ids == all_source_ids
     assert doc["summary"]["unique_evidence_referenced"] == len(all_source_ids)
+    total_refs = sum(len(c["evidence_ids"]) for c in doc["chunks"])
+    assert total_refs == doc["summary"]["total_evidence_referenced"]
 
 
 # ----------------------------------------------------------------------
@@ -557,7 +559,18 @@ def test_19_real_c10_video_smoke() -> None:
     assert doc["canonical_id"] == "douyin_7681603850364521734"
     assert doc["summary"]["total_chunks"] == 4
     assert doc["summary"]["unique_evidence_referenced"] == 184
+    assert doc["summary"]["total_evidence_referenced"] == 190
     assert doc["summary"]["verification_status"] == "not_checked"
+
+    chunk_lens = [len(c["evidence_ids"]) for c in doc["chunks"]]
+    assert chunk_lens == [48, 50, 50, 42]
+    total_refs = sum(chunk_lens)
+    assert total_refs == doc["summary"]["total_evidence_referenced"] == 190
+    unique_refs = len({eid for c in doc["chunks"] for eid in c["evidence_ids"]})
+    assert unique_refs == doc["summary"]["unique_evidence_referenced"] == 184
+    overlap_refs = sum(len(c["overlap_evidence_ids"]) for c in doc["chunks"])
+    assert overlap_refs == 6
+    assert total_refs - overlap_refs == unique_refs == 184
 
     # Verify temporal range is strictly contiguous and envelopes segments
     for c in doc["chunks"]:
@@ -586,6 +599,7 @@ def test_20_real_c10_album_smoke() -> None:
     assert doc["canonical_id"] == "douyin_7682038498466993905"
     assert doc["summary"]["total_chunks"] == 1
     assert doc["summary"]["unique_evidence_referenced"] == 4
+    assert doc["summary"]["total_evidence_referenced"] == 4
     assert doc["summary"]["verification_status"] == "not_checked"
 
     chunk = doc["chunks"][0]

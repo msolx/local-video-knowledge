@@ -211,10 +211,19 @@ def verify_evidence_chunks(manifest_or_file: dict[str, Any] | Path | str) -> boo
         return False
     if data.get("schema_version") != EVIDENCE_CHUNKS_SCHEMA_VERSION:
         return False
-    if data.get("summary", {}).get("verification_status") != "not_checked":
+    summary = data.get("summary", {})
+    if summary.get("verification_status") != "not_checked":
         return False
 
     chunks = data.get("chunks", [])
+    if chunks:
+        actual_total_refs = sum(len(c.get("evidence_ids", [])) for c in chunks)
+        actual_unique_refs = len({eid for c in chunks for eid in c.get("evidence_ids", [])})
+        if summary.get("total_evidence_referenced") != actual_total_refs:
+            return False
+        if summary.get("unique_evidence_referenced") != actual_unique_refs:
+            return False
+
     expected_chunk_fps = []
     seen_chunk_ids: set[str] = set()
 
