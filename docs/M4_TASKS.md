@@ -2,7 +2,7 @@
 
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
-> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE / SEALED` | M4-04 = `DONE` | M4-05 = `DONE` | M4-06 = `TODO`
+> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE / SEALED` | M4-04 = `DONE` | M4-05 = `DONE` | M4-06 = `DONE`
 
 ---
 
@@ -16,7 +16,7 @@
 | **M4-03** | **Cross-Chunk Deduplication & Merging** | Sealed | **`DONE / SEALED`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
 | **M4-04** | **Entity & Topic Attachment** | Complete | **`DONE`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
 | **M4-05** | **Verification Contract & Audit Render** | Complete | **`DONE`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
-| **M4-06** | **M4 End-to-End Acceptance** | TBD | **`TODO`** | M4-01 ~ M4-05 | Full offline regression & formal asset acceptance |
+| **M4-06** | **M4 End-to-End Acceptance** | Complete | **`DONE`** | M4-01 ~ M4-05 | `docs/M4_FINAL_ACCEPTANCE.md`, `scripts/run_m4_06_acceptance.py`, `tests/test_m4_acceptance.py` |
 
 ---
 
@@ -105,9 +105,16 @@
     - C10 Album: 6 → 6 units, 0 identity violations, all `claim` / `not_checked`, 6 entities (`logitech`, `INAMAX`, `lognach`, `AGON`, `SMILEY`, `081`), 6 topics (`brand mention`, `text mention`); OCR excerpts rendered verbatim as blockquotes.
     - Cache hit verified: repeated `finalize_knowledge_document` returns byte-identical `knowledge_units.json` / `knowledge.md`.
 
-### M4-06: M4 End-to-End Acceptance (`TODO`)
+### M4-06: M4 End-to-End Acceptance (`DONE`)
 - **Objective**: Execute end-to-end regression across all formal test assets (C10 Video & C10 Album).
 - **Target Scope**:
   - Validate JSON schema conformance (`knowledge-units-v1`).
   - Verify deterministic IDs, canonical evidence ordering, unit-aware lineage, and audit rendering.
   - Deliverable: `docs/M4_FINAL_ACCEPTANCE.md`.
+- **Delivered**:
+  - `scripts/run_m4_06_acceptance.py`: read-only audit runner covering chain counts, fingerprint chain (candidates → merged → enriched → final), KU ID recomputation, full evidence grounding (excerpt/coords/order, unresolved-visual rejection), attribution (modality-based), observation gate, verification counts, entity surface grounding, topic policy, lineage traceability, cross-stage identity (M4-03→04 / M4-04→05), Markdown/JSON parity, qualitative samples, and classification markers. Writes a machine-readable summary to gitignored `data/acceptance/m4_06_acceptance_summary.json` (`knowledge_layer: false`).
+  - `tests/test_m4_acceptance.py`: 33 tests covering the full acceptance contract (chain counts, fingerprint chain, stale/tampered artifact detection, KU ID recomputation, excerpt/coordinate grounding, unresolved-visual rejection, attribution, observation gate, entity grounding + alias rejection, topic bounds, lineage traceability, finalization identity, Markdown/JSON parity, zero-unit pipeline, and both real C10 fixtures).
+  - Real C10 acceptance: Video 62→62→62→62 (fingerprint chain intact, 68/68 KU IDs recomputed with 0 mismatches, 144 evidence refs 0 violations, 132/132 entities grounded, 97 topics 0 violations, 0 orphan lineage); Album 6→6→6→6 (6 evidence refs 0 violations, 6/6 entities grounded, 6 topics). Identity audits 0 violations; Markdown parity 62/62 + 6/6.
+  - Qualitative sample audit: 15 video units → A=13, B=2, C=0, D=0, E=0; 4/62 occasional advisory/procedural phrasing typed as `claim` (known limitation, extractor untouched); album 6/6 grounded with no brand-relationship inference.
+  - Full regression: 986 passed, 10 skipped (M3 baseline 953 + 33 new, zero regressions).
+  - Full report: `docs/M4_FINAL_ACCEPTANCE.md` → **ACCEPT (M4 COMPLETE with known limitations)**.

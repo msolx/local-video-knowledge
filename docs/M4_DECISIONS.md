@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M4-05 `DONE`; M4-06 next)
+> **Milestone Status**: `COMPLETE` (M4-00 ~ M4-06 all `DONE`; M4 accepted)
 > **Status**: APPROVED / ACTIVE  
 > **Context**: Transitioning from Grounded Evidence (M3 Output) to Structured Canonical Knowledge Units (M4 Output).
 
@@ -221,3 +221,16 @@
   - **Provenance**: `CanonicalKnowledgeUnitsDocument.extraction_provenance` carries the real M4-02 extraction provenance verbatim (never fabricated). Enrichment provenance and finalization wrapper/audit metadata live in the M4-05 wrapper (`knowledge_finalization.json`) and the `knowledge.md` header; the canonical schema is never extended.
   - **Fingerprint / cache**: the finalization fingerprint hashes the enriched artifact content fingerprint, `knowledge_schema_version`, and render policy version. Identical input + policy re-runs return a cache hit with `knowledge_units.json` byte-identical and `knowledge.md` byte-stable, never rewriting `generated_at`, and never re-invoking extractor/merger/enrichment/LLM.
   - **No model runtime**: M4-05 is 100% deterministic and offline. It must not start or probe LM Studio or llama.cpp, search model files, or call any LLM endpoint. Future local runtime preference (documented as an operator note in `docs/M4_HANDOFF.md`): prefer llama.cpp at `G:\llama.cpp` with local models in `D:\LMmodel`; LM Studio is no longer the default runtime; inference-free tasks must not start or probe either runtime.
+
+---
+
+## Decision 20: M4 End-to-End Acceptance (M4-06)
+- **Context**: M4-06 is the final acceptance stage of Milestone M4. It is verification, not feature work — a 100% offline, deterministic, read-only audit of the real C10 artifacts for both formal assets, followed by a documented acceptance decision.
+- **Decision**:
+  - **Scope**: acceptance only. M4-06 adds no knowledge, invokes no LLM/runtime, re-extracts nothing, and does not modify `models.py`, `extractor.py`, `merger.py`, `enrichment.py`, or `render.py`. M5 / RAG / Retrieval is explicitly out of scope.
+  - **Artifact chain**: each stage must reference the true upstream content fingerprint (`candidates → merged → enriched → final`). Any mismatch (stale artifact / fingerprint chain break) is an M4-06 FAIL; old stages are never silently regenerated to mask staleness.
+  - **Structural audits**: full KU ID recomputation via the frozen deterministic formula (0 mismatch required), full evidence grounding (evidence_id exists in manifest, legal chunk membership, verbatim excerpt == payload, temporal/sequence equality, no empty excerpt, no unresolved visual grounding, canonical ordering), attribution (modality-based: speech → `unverified_speaker`, visual → `visual_media`, verification_question → `system_derived`; source_actor never copied into speaker), observation gate (observations only on usable direct machine-perceptual evidence), verification counts (no silent status promotion), entity surface grounding (NFKC/casefold/whitespace normalization; substring in statement or excerpt only), topic policy (0–5 per KU, 2–32 chars, normalized, deduplicated), and lineage traceability (run_id, real chunk ids, real candidate ids — no orphans). All are full-set audits, never sampling.
+  - **Cross-stage identity**: M4-03→M4-04 may change only `entities`/`topics`; M4-04→M4-05 must keep all 11 canonical fields byte-identical. `knowledge.md` must render each final KU exactly once with matching IDs/statements/attribution/evidence/entities/topics/lineage and never produce extra units.
+  - **Qualitative gates**: a deterministic sample (~15 video units) is human-classified A/B/C/D/E; the album is checked for OCR-only claims with no brand/company/sponsor/product inference; classification markers (建议/最好/第一步/不要只看…) are scanned for claim/opinion/procedure quality. Minor occasional misclassification (~6.5%) is acceptable as a **known limitation**; systematic errors, hallucinated KUs, broken grounding/lineage, or fingerprint mismatch force **HOLD**.
+  - **No output mutation**: M4-06 never edits the real candidates/merged/enriched/units/markdown artifacts. The audit runner (`scripts/run_m4_06_acceptance.py`) is read-only; its machine-readable summary (`data/acceptance/m4_06_acceptance_summary.json`) is explicitly `knowledge_layer: false`.
+  - **Acceptance result**: **ACCEPT** — all structural gates passed, M4 declared `COMPLETE` with known limitations. M4 is awaiting milestone integration / next milestone definition; no M5 work starts from this decision.

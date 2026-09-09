@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `DONE / SEALED`, M4-04 = `DONE`, M4-05 = `DONE`, M4-06 = `TODO`)
+> **Milestone Status**: `COMPLETE` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `DONE / SEALED`, M4-04 = `DONE`, M4-05 = `DONE`, M4-06 = `DONE`)
 > **Source Baseline**: Milestone M3 Sealed at Tag `m3-media-integration-complete` (`1f1c3b9a604d2fbdb9bb63606d6392aa893c080e`).  
 > **Working Branch**: `feat/m4-unified-knowledge-model`
 
@@ -38,6 +38,9 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
   - C10 Video: `knowledge_units.json` 62 units, `knowledge.md` ~59 KB, 0 identity violations, all `claim`/`not_checked`.
   - C10 Album: `knowledge_units.json` 6 units, `knowledge.md` ~4.5 KB, 0 identity violations, OCR excerpts rendered verbatim.
   - Cache hit verified: repeated runs return byte-identical artifacts without rewriting `generated_at`.
+- `scripts/run_m4_06_acceptance.py` (M4-06): read-only end-to-end acceptance runner over both C10 assets (chain counts, fingerprint chain, KU ID recomputation, full evidence grounding, attribution, observation gate, verification counts, entity surface grounding, topic policy, lineage traceability, cross-stage identity, Markdown/JSON parity, qualitative samples, classification markers). Writes a machine-readable summary to gitignored `data/acceptance/m4_06_acceptance_summary.json` (`knowledge_layer: false`); never mutates knowledge artifacts.
+- `tests/test_m4_acceptance.py` (M4-06): 33 tests covering the full acceptance contract, including real C10 video & album fixtures, tampered/stale artifact detection, and zero-unit pipeline validity.
+- `docs/M4_FINAL_ACCEPTANCE.md` (M4-06): Formal acceptance report → **ACCEPT (M4 COMPLETE with known limitations)**. Real C10 acceptance: Video 62→62→62→62, Album 6→6→6→6; fingerprint chain intact; 68/68 KU IDs recomputed with 0 mismatches; 144+6 evidence refs with 0 grounding violations; 138/138 entities grounded; 103 topics with 0 policy violations; 0 orphan lineage; 0 cross-stage identity violations; Markdown parity 62/62 + 6/6; qualitative sample A=13 / B=2 / C=0 / D=0 / E=0.
 
 ---
 
@@ -123,9 +126,13 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
 - **M4-05 Additions**:
   - `src/knowledge/render.py`
   - `tests/test_knowledge_render.py`
+- **M4-06 Additions**:
+  - `docs/M4_FINAL_ACCEPTANCE.md`
+  - `scripts/run_m4_06_acceptance.py`
+  - `tests/test_m4_acceptance.py`
 - **Zero M2/M3 Code Touched**: Files in `src/collector/`, `src/downloader/`, `src/media_adapter/`, `src/visual/`, `src/chunking/`, `src/provenance.py` remain completely untouched.
-- **Final Reconciliation Targeted Suite**: 210 passed (`test_knowledge_models.py` + `test_knowledge_extraction.py` + `test_knowledge_dedup.py` + `test_knowledge_enrichment.py` + `test_knowledge_render.py`).
-- **Full Regression**: 953 passed, 10 skipped; M2/M3 implementation remained untouched.
+- **M4-06 Targeted Suite**: 243 passed (`test_knowledge_models.py` + `test_knowledge_extraction.py` + `test_knowledge_dedup.py` + `test_knowledge_enrichment.py` + `test_knowledge_render.py` + `test_m4_acceptance.py`).
+- **Full Regression**: 986 passed, 10 skipped; M2/M3 implementation remained untouched.
 
 ### Operator Note: Local LLM Runtime Preference
 
@@ -141,16 +148,21 @@ This is an operator/runtime note only; it does not modify any M4 schema.
 ---
 
 ## 5. NEXT_AGENT_START_HERE
-- **Task**: `M4-06 · M4 End-to-End Acceptance`
-- **Objective**: Execute end-to-end regression across all formal test assets (C10 Video & C10 Album) and finalize the milestone with `docs/M4_FINAL_ACCEPTANCE.md`.
-- **Entry Points**:
-  - `data/processed/douyin_7681603850364521734/knowledge/knowledge_units.json` + `knowledge.md` (final canonical outputs)
+- **Task**: `M4 complete — awaiting milestone integration / next milestone definition`
+- **Objective**: Milestone M4 (Unified Knowledge Model) has passed end-to-end acceptance. Do not begin M5 / RAG / Retrieval until a new milestone is defined.
+- **Milestone Status**: `COMPLETE` — M4-00 ~ M4-06 all `DONE`; final acceptance report at `docs/M4_FINAL_ACCEPTANCE.md` (**ACCEPT with known limitations**).
+- **M4 Known Limitations** (recorded, not fixed):
+  - ~4/62 video units (~6.5%) show occasional advisory/procedural phrasing typed as `claim` (e.g. `ku_cd2c84d746aa6a28`, `ku_bfd600d997ff9258`, `ku_450bbaec3088a1d2`, `ku_73956456112cb153`). Classifier refinement deferred; extractor untouched.
+  - 3 video meta/announcement units carry low epistemic weight (`ku_f7bee5094a3efa30`, `ku_b8b32be1593951cf`, `ku_d1273cff79cf8880`).
+  - No semantic near-duplicate merge (exact KU-ID dedup by design); no near-dup pairs found in the final video set.
+  - Statement-level ASR unit noise (e.g. "TB" tokens/sec) preserved verbatim per excerpt contract — upstream M3 concern.
+- **Entry Points** (all read-only for future work):
+  - `data/processed/douyin_7681603850364521734/knowledge/knowledge_units.json` + `knowledge.md`
   - `data/processed/douyin_7682038498466993905/knowledge/knowledge_units.json` + `knowledge.md`
-  - `src/knowledge/render.py` (M4-05 finalization & audit render)
-  - `docs/M4_KNOWLEDGE_MODEL_DESIGN.md` (sealed schema contract)
+  - `src/knowledge/` (models, extractor, merger, enrichment, render — all sealed)
+  - `docs/M4_KNOWLEDGE_MODEL_DESIGN.md`, `docs/M4_DECISIONS.md`, `docs/M4_TASKS.md`, `docs/M4_FINAL_ACCEPTANCE.md`
 - **Scope**:
-  - Validate JSON schema conformance (`knowledge-units-v1`).
-  - Verify deterministic IDs, canonical evidence ordering, unit-aware lineage, and audit rendering.
-  - Deliverable: `docs/M4_FINAL_ACCEPTANCE.md`.
+  - Next milestone definition is external; M4 does not prescribe M5.
+  - Any inference-free M4 follow-up must not start or probe either LLM runtime.
 - **Operator Note**: Future local LLM runtime preference is llama.cpp (`G:\llama.cpp`) with models in `D:\LMmodel`; LM Studio is no longer the default. Inference-free tasks must not start or probe either runtime.
 
