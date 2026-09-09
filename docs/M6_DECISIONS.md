@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 .. M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 .. M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -123,3 +123,10 @@
 ## Decision 20: File Transfer v1 = Shared Filesystem (A), with Atomic-Rename + Hash Verification
 - **Context**: NAS and PC need to exchange stage inputs/outputs reliably.
 - **Decision**: Prefer option A (SMB/shared filesystem) as the v1 transfer strategy; writers use `.tmp` + atomic rename and SHA-256 verification; readers only see final names after producer success. B (sync/staging) and C (HTTP worker API) are documented fallbacks, not v1.
+
+---
+
+## Decision 21: Additive Job State Correction — `CANCELLED` (M6-01)
+- **Context**: M6-00 frozen the admin operation `cancel job`, but the frozen job lifecycle (`QUEUED → LEASED → RUNNING → SUCCEEDED | FAILED_RETRYABLE | FAILED_TERMINAL`) had no way to distinguish "admin cancelled" from "terminal failure". Without `CANCELLED`, cancelled jobs are indistinguishable from `FAILED_TERMINAL`.
+- **Decision**: Add the single additive job state `CANCELLED` to the frozen job lifecycle. It is **terminal**, never auto-retryable, and cannot be requeued/claimed. Legal entries: `QUEUED → CANCELLED` and `FAILED_RETRYABLE → CANCELLED`. Cancelling a `LEASED`/`RUNNING`/already-terminal job is a deterministic no-op (frozen and tested). No other lifecycle state is added or renamed; in particular M6 does **not** add `FAILED_PC_OFFLINE` or `WAITING_FOR_PC` (per Decision 11, a job waiting for a matching capability worker simply stays `QUEUED`).
+- **Status**: FROZEN (implemented + tested in M6-01).

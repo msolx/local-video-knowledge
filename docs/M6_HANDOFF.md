@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-00 = DONE`; `M6-01 = NEXT`; `M6-02..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`; `M6-02 = NEXT`; `M6-03..M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -8,12 +8,12 @@
 
 ## 1. Current State
 
-- M6-00 (design only) is complete on `feat/m6-automated-knowledge-operations`, branched from `main` at `e6476be57564d950b7eb75016eed54b1cbf32fec` (M5 final SHA).
-- No production code changed. No Docker, no operations DB, no service, no runtime started.
-- Docs created:
+- M6-00 (design) and M6-01 (durable operations store + job state machine) are complete on `feat/m6-automated-knowledge-operations`, branched from `main` at `e6476be57564d950b7eb75016eed54b1cbf32fec` (M5 final SHA).
+- M6-01 delivered `src/operations/` (`models.py`, `store.py`, `__init__.py`) + `tests/test_operations_store.py` (76 tests, all passing). No production operations DB created; no M2–M5 code modified; no runtime started.
+- Docs:
   - `docs/M6_OPERATIONS_ARCHITECTURE.md`
-  - `docs/M6_DECISIONS.md`
-  - `docs/M6_TASKS.md`
+  - `docs/M6_DECISIONS.md` (now 21 decisions; Decision 21 = additive `CANCELLED` job state)
+  - `docs/M6_TASKS.md` (M6-01 DONE)
   - `docs/M6_HANDOFF.md`
 
 ---
@@ -23,7 +23,7 @@
 - Canonical asset identity remains `(platform, platform_content_id)` — frozen, not re-created.
 - Stage graph (frozen): `DISCOVER → ARCHIVE → MEDIA_PROCESS → EVIDENCE_READY → KNOWLEDGE_EXTRACT → KNOWLEDGE_FINALIZE → STORE_INGEST → DONE`.
 - Asset lifecycle: `DISCOVERED → ARCHIVED → EVIDENCE_READY → KNOWLEDGE_READY → SEARCHABLE`.
-- Job lifecycle: `QUEUED → LEASED → RUNNING → SUCCEEDED | FAILED_RETRYABLE | FAILED_TERMINAL`.
+- Job lifecycle: `QUEUED → LEASED → RUNNING → SUCCEEDED | FAILED_RETRYABLE | FAILED_TERMINAL` (+ additive terminal `CANCELLED` from admin cancel, Decision 21; no `FAILED_PC_OFFLINE`/`WAITING_FOR_PC` — capability wait stays `QUEUED`).
 - Job idempotency: `job_id = sha256(platform|platform_content_id|stage|input_artifact_fingerprint|policy_version)[:16]`; SUCCEEDED same-key job = SKIP.
 - Lease model: `lease_owner/leased_at/lease_expires_at` + heartbeat; expiry → safe requeue.
 - Retry: RETRYABLE (PC offline, file lock, LLM down, network) with attempt/max/backoff; TERMINAL (corrupt source, schema failure, unsupported media) without auto-retry.
@@ -68,21 +68,31 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ---
 
-## 5. NEXT_AGENT_START_HERE
+## 5. M6-01 Deliverables Completed
 
-**M6-01 · Durable Operations Store + Job State Machine**
-
-- Objective: implement `data/operations/operations.sqlite3` (logical `ops.db_path`) with tables `assets`, `pipeline_runs`, `jobs`, `job_attempts`, `workers`, `leases`/`heartbeats`, `event_log`; freeze asset/job state machines; deterministic `job_id`; durable queue semantics; crash recovery via lease expiry.
-- Entry points to reuse: `src/knowledge/store.py` patterns (`PRAGMA user_version`, `_sha256_json`, `compute_store_revision`, atomic replace), `src/storage.py` (`atomic_write_json`, `load_json`, `utc_now`, `sha256_file`).
-- Deliverable (subject to M6-01 spec): `src/operations/store.py` (or `src/operations/` package) + `tests/test_operations_store.py`.
-- Constraints: do not modify M5 `knowledge_store.sqlite3`; do not modify any M2–M5 sealed module; no runtime/model start; SQLite only.
-- Commit message: `feat(m6): add durable operations store and job state machine` (adjust to actual deliverable).
-
-Do not start M6-02 until M6-01 is sealed.
+- `src/operations/models.py` — frozen `operations-store-v1` contract: `AssetLifecycleState`, `JobState` (incl. additive `CANCELLED`), `JobStage` (`DISCOVER | ARCHIVE | MEDIA_PROCESS | EVIDENCE_READY | KNOWLEDGE_EXTRACT | KNOWLEDGE_FINALIZE | STORE_INGEST`), `PipelineRunStatus`, `TriggerType` (`discovery|manual|recovery`), frozen legal-transition tables, `compute_job_id` (`job_<sha256(platform|platform_content_id|stage|input_fingerprint|policy_version)[:16]>`), `normalize_input_fingerprint` (stable 64-hex SHA-256 required; timestamp substitution rejected), UTC-ISO timestamps, Python-side backoff → `next_retry_at`.
+- `src/operations/store.py` — `PRAGMA user_version=1`, `operations_meta`, 7 tables (`assets`, `pipeline_runs`, `jobs`, `job_attempts`, `workers`, `event_log`), `foreign_keys=ON`, `BEGIN IMMEDIATE` mutations, enqueue idempotency (SUCCEEDED→SKIP; active→exists; retryable→retry path; terminal/cancelled→no silent resurrection; changed input/policy→new generation), central transition engine (`transition_job_state`, `transition_asset_lifecycle`), `cancel_job` / `requeue_retryable_job` (terminal/exhausted → explicit reject), lease-field persistence (`set_job_lease`/`clear_job_lease`, no worker protocol yet), `begin_attempt`/`finish_attempt` (monotonic numbering, exhaustion→`FAILED_TERMINAL`), `register_worker`/`worker_heartbeat`, append-only `event_log`, full read API, `validate_operations_store`. No hard-delete API; no secret payloads; no production DB.
+- `src/operations/__init__.py` — full export surface.
+- `tests/test_operations_store.py` — 76 tests (init/version/tables, asset lifecycle legal+illegal+admin override, job id determinism, enqueue idempotency + changed-input generations, pipeline runs, transitions, terminal immutability, CANCELLED semantics, retry/backoff/exhaustion, attempts, event log append-only, workers, lease fields, transaction rollback, FK integrity, validation clean+corrupted, list APIs, Unicode, SQL-injection safety, UTC, synthetic complete flow, duplicate discovery). Target run: 76 passed.
 
 ---
 
-## 6. Hard Constraints (carried forward)
+## 6. NEXT_AGENT_START_HERE
+
+**M6-02 · Worker Runtime + Capability / Lease Protocol**
+
+- Objective: implement the worker runtime + the M6-02 capability/lease protocol on top of the M6-01 store primitives.
+- Entry points to reuse: `src/operations/store.py` — `register_worker`, `worker_heartbeat`, `set_job_lease`/`clear_job_lease`, `transition_job_state` (`QUEUED→LEASED` claims, `LEASED→QUEUED` lease-expiry recovery), `begin_attempt`/`finish_attempt`; `src/operations/models.py` enums and `compute_job_id`.
+- Deliverable (subject to M6-02 spec): worker runtime + lease/heartbeat protocol (`src/operations/` additions) + tests.
+- Constraints: do not modify M5 `knowledge_store.sqlite3`; do not modify any M2–M5 sealed module; do not modify M6-01 sealed store semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
+- Commit message: per M6-02 spec.
+- The M6-01 store already persists `lease_owner/leased_at/lease_expires_at/lease_token` and rejects residual lease fields on non-leased states; the concurrent atomic claim algorithm is M6-02's job.
+
+Do not start M6-03 until M6-02 is sealed.
+
+---
+
+## 7. Hard Constraints (carried forward)
 
 - M2/M3/M4/M5 sealed logic: never rewrite.
 - Topology A frozen for v1; Topology B blocked until browser-runtime portability is resolved.
