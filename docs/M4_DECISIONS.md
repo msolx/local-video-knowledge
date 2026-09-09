@@ -11,17 +11,22 @@
 - **Decision**:
   - M4 treats the M3 Evidence Layer as its **sole authoritative input**.
   - M4 will **never** re-read raw video files, re-extract audio, re-run ASR/OCR, or query the live Douyin network or `data/metadata.db`.
-  - All source metadata (title, author, published_at, first_seen_at) is consumed directly from `evidence_manifest.json`.
+  - All source metadata is consumed directly from `evidence_manifest.json`.
 
 ---
 
-## Decision 2: Decoupling of Unit Type from Speaker Attribution
-- **Context**: Calling a unit `author_claim` or `author_opinion` falsely assumes the channel creator is verified to be the speaker, whereas ASR lacks speaker diarization.
+## Decision 2: Source-Neutral Attribution Architecture & Decoupling from Unit Type
+- **Context**: Calling a unit `author_claim` or `author_opinion` falsely assumes the creator is verified to be the speaker, whereas ASR lacks speaker diarization. Furthermore, platform-specific fields like `channel_creator` break generalization across Bilibili, YouTube, Web pages, Forums, PDF documents, Xiaoheihe, etc.
 - **Decision**:
-  - Knowledge semantics (`unit_type`) and speaker attribution (`attribution`) are strictly orthogonal.
+  - Knowledge semantics (`unit_type`) and attribution (`attribution`) are strictly orthogonal.
   - Canonical unit types: `claim`, `opinion`, `observation`, `procedure_step`, `verification_question`.
-  - Attribution captures: `channel_creator`, `channel_creator_id`, `speaker_name`, and `attribution_status`.
-  - Without diarization, speech defaults to `attribution_status = "unverified_speaker"`.
+  - Attribution schema is **source-neutral**:
+    - `source_actor_name`: Publisher / uploader / author / account identity (e.g., Douyin author, YouTube channel, forum poster, document author).
+    - `source_actor_id`: Platform or account identifier of the source actor.
+    - `speaker_name`: Actual speaker within media, populated **only when evidence explicitly supports it**.
+    - `speaker_id`: Speaker identifier (if diarized / identified, else `null`).
+    - `attribution_status`: Enum representing attribution confidence.
+  - **Default ASR Rule**: Ordinary ASR without speaker diarization strictly sets `speaker_name = null`, `speaker_id = null`, and `attribution_status = "unverified_speaker"`. Knowing `source_actor_name` does **not** allow assuming the speaker is the source actor.
 
 ---
 
@@ -36,7 +41,8 @@
 ## Decision 4: Canonical Evidence Ordering Invariant
 - **Context**: Sorting evidence IDs alphabetically destroys temporal and sequential narrative context.
 - **Decision**:
-  - `evidence_refs` strictly maintains the canonical order from `evidence_manifest.json` and `evidence_chunks.json`. Lexical sorting is forbidden.
+  - `evidence_refs` strictly maintains the canonical order from `evidence_manifest.json` and `evidence_chunks.json` (temporal start ascending for media, sequence order ascending for albums/docs).
+  - Lexical sorting by `evidence_id` string is strictly forbidden.
 
 ---
 
@@ -66,11 +72,13 @@
 
 ---
 
-## Decision 8: Removal of Relationships from KnowledgeUnit v1
+## Decision 8: Removal of Relationships from KnowledgeUnit v1 (DEFERRED)
 - **Context**: Knowledge graph edge modeling has no active consumer or schema defined in M4.
 - **Decision**:
-  - Remove `relationships` from KnowledgeUnit v1 to avoid sparse, undefined fields.
-  - Keep `entities` and `topics` as structured extension points. Inter-unit graph linking is deferred to future work.
+  - Completely **REMOVE** `relationships` from KnowledgeUnit v1 proposal.
+  - Retain only `entities` and `topics`.
+  - Inter-unit relationships and cross-asset links are formally **DEFERRED** to a future Knowledge Graph milestone.
+  - Do NOT leave a placeholder `relationships: []` field.
 
 ---
 
@@ -82,4 +90,18 @@
   - `src/knowledge/service.py`: **ADAPT** into `src/knowledge/extractor.py` and `merger.py`.
   - `src/backends/llm.py`: **ADAPT** prompt and output schema to `knowledge-units-v1`.
   - `src/render.py`: **ADAPT** to render typed KnowledgeUnits in `knowledge.md` as an internal audit representation (NOT Obsidian).
-  - Legacy `author_claim` / `author_opinion` map to canonical `claim` / `opinion` with explicit author attribution.
+  - Legacy `author_claim` / `author_opinion` map to canonical `claim` / `opinion`. Historical author attribution is migrated to `source_actor_explicit_speaker` only if evidence explicitly proves it, otherwise defaulting to `unverified_speaker`.
+
+---
+
+## Decision 10: Observation Grounding Contract & Speech Boundary
+- **Context**: Conflating speech claims with empirical observations causes hallucinations (e.g. treating spoken phrase "这里可以看到 X" as proof of X's physical presence).
+- **Decision**:
+  - An `observation` unit **MUST** originate from direct perceptual / machine-observed evidence:
+    - OCR visible text (`visual_text`)
+    - VLM visual description (`visual_description`)
+    - Structured log / benchmark output
+    - Direct measurable media property
+  - Spoken evidence ("这里可以看到 X") only proves that the speaker claimed/described X; it cannot alone support an `observation` that X actually exists.
+  - If an asset contains only speech evidence (like C10 Video), `observation` is strictly **`NOT PRESENT`**.
+  - For image albums where only OCR text is available, observations must strictly describe detected text ("第 N 张图 OCR 检测到文本 X") without hallucinating semantic categories ("赞助商", "战队", "海报") unless supported by VLM evidence.
