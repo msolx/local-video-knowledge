@@ -1,6 +1,6 @@
 # Milestone M5: Knowledge Store & Retrieval Foundation · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`; M5-02 next)
+> **Milestone Status**: `IN_PROGRESS` (M5-00 = `DONE / SEALED`, M5-01 = `DONE`, M5-02 = `DONE`; M5-03 next)
 > **Status**: APPROVED / ACTIVE
 > **Context**: M4 is COMPLETE/SEALED (`knowledge_units.json` schema `knowledge-units-v1`). M5 builds a derived, rebuildable, queryable Knowledge Store with a lexical retrieval contract, offline and deterministic.
 
@@ -100,7 +100,7 @@
 - **Context**: Indexing only statements loses evidence recall; indexing everything flat lets long excerpts drown statement ranking.
 - **Decision**:
   - Index four **independent weighted FTS5 columns**: `statement` (highest), `entity_names` (medium), `topics` (medium), `evidence_excerpts` (lowest).
-  - External-content FTS5 (`content='knowledge_units'`, `content_rowid='unit_rowid'`), `unicode61` tokenizer.
+  - External-content FTS5 over a **materialized projection table** `knowledge_fts_content` (`content='knowledge_fts_content'`, `content_rowid='unit_rowid'`), tokenizer `trigram` (see Decision 21 for the tokenizer correction over the original `unicode61`).
   - Ranking via `bm25()` with explicit column weights so evidence text never swamps statement matches.
 
 ---
@@ -177,3 +177,34 @@
 - **Decision**:
   - SQLite + FTS5 is the v1 target and is assessed as comfortable through 100k KUs and still workable at 1M with proper indexes and bounded `top_k`.
   - No distributed database for hypothetical millions of rows; revisit only when a real consumer demands it.
+
+---
+
+## Decision 21: FTS5 Tokenizer = `trigram` (Chinese/Mixed-Corpus Correction)
+- **Context**: M5-00 (Decision 11) originally froze the FTS5 `unicode61` tokenizer as an implementation detail, not part of the Retrieval Contract. M5-02 performed a real pre-flight probe on SQLite 3.45.3 before touching the schema (fixtures included 本地大模型推理 / 应当综合考量推理引擎、任务类型以及思考模式 / 使用Vulkan后端运行27B模型 / RDNA架构 / Thinking模式).
+- **Probe result (`unicode61`)**: it tokenizes each contiguous CJK(+Latin) run as a **single token** with no word boundaries. Every Chinese word query and every Latin token embedded in mixed text returned 0 matches — 推理, 模型, 大模型, 本地大模型, 推理引擎, 思考模式, 任务类型, Vulkan, 27B, 27B模型, 后端运行, RDNA, 架构, Thinking, thinking, 模式, 兼容性, A卡, 兼容性问题 all → 0. Only full-run tokens matched (RDNA架构→1, Thinking模式→1). `unicode61` is therefore unusable for the Chinese-dominant CN+Latin mixed corpus.
+- **Probe result (`trigram`)**: every query of 3+ characters matched (大模型, 本地大模型, 推理引擎, 思考模式, 任务类型, Vulkan, 27B, 27B模型, 后端运行, RDNA, RDNA架构, Thinking, thinking, Thinking模式, 兼容性, 兼容性问题 → 1). Case-insensitive. 1- and 2-character queries return 0 (documented limitation, below).
+- **Decision**:
+  - Freeze **`trigram`** as the M5 v1 lexical tokenizer for the store's FTS index.
+  - This is a bounded implementation-decision correction under the original M5-00 architecture, **not** a redesign of the M5 Retrieval Contract (RetrievalQuery/Hit/Result, field weights, and index semantics are unchanged).
+  - `store_meta` records `fts_policy_version = "m5-fts-trigram-v1"` and `fts_tokenizer = "trigram"` so a future schema/tokenizer change is detectable without a migration engine.
+- **Known lexical limitation (documented, not a bug)**: `trigram` cannot match queries shorter than 3 characters. This round **intentionally provides no fallback** (no `LIKE`, no substring scan). M5-03/M5-04 will add a deterministic short-query fallback if needed.
+
+---
+
+## Decision 22: FTS Content Projection & Trigger-Based Atomic Sync
+- **Context**: `knowledge_units` has no `entity_names` / `topics` / `evidence_excerpts` columns (those live in child tables), so an external-content FTS over `knowledge_units` cannot reference derived text.
+- **Decision**:
+  - Add a **derived materialized table** `knowledge_fts_content` (`unit_rowid INTEGER PRIMARY KEY` 1:1 with `knowledge_units.unit_rowid`; `statement`, `entity_names`, `topics`, `evidence_excerpts` all `TEXT NOT NULL`), populated deterministically at ingestion time from the canonical payload in canonical ordinal order (space-separated joins; never re-sorted, never summarized, never attribution/verification/confidence).
+  - The FTS index is **external-content** over `knowledge_fts_content` (`content_rowid='unit_rowid'`).
+  - Three SQLite triggers (`knowledge_fts_ai` / `knowledge_fts_ad` / `knowledge_fts_au`) keep the FTS index in sync with the content projection **inside the same transaction** as the canonical rows (Decision 18). Replace/remove/rebuild therefore always leave a consistent index; any rollback leaves both intact.
+  - `knowledge_fts_content` and `knowledge_fts` are **derived projections only** — never the source of truth.
+  - Store revision (Decision-based) is computed **only** from `(canonical_id, source_artifact_fingerprint)` pairs; FTS rowids/index state/time never change it.
+
+---
+
+## Decision 23: Literal Query Safety & No Structured Filters in M5-02
+- **Context**: FTS5 `MATCH` has its own query language (quotes/hyphen/parens/asterisk/colon/CJK punctuation); user text must never be spliced into SQL or interpreted as advanced query syntax.
+- **Decision**:
+  - User `query_text` is always passed via **parameterized SQL**; the MATCH string is built by `literal_fts_query` — the entire input is wrapped in double quotes with embedded quotes doubled, making it a literal FTS5 phrase. No query parser is built.
+  - M5-02 exposes only the low-level internal helper `lexical_search_rows(conn, query_text, limit)` returning `(unit_rowid, bm25_score)`; the public Retrieval API (`RetrievalQuery`/`RetrievalHit`/`RetrievalResult`) and structured filters (`canonical_ids`, `unit_types`, `verification_statuses`, `topics`, `entity_names`) are M5-03 scope and are **not** implemented here.

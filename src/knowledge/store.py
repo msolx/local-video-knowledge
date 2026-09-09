@@ -9,7 +9,12 @@ Implements the sealed `knowledge-store-v1` schema:
   - entities           per-unit entity mentions (canonical ordinal preserved)
   - topics             per-unit topics (canonical ordinal preserved)
 
-Invariants (M5-00 Decisions 1, 5-9):
+M5-02 FTS5 lexical indexing (trigram):
+
+  - knowledge_fts_content  materialized FTS content projection (derived)
+  - knowledge_fts          external-content FTS5 index over the projection
+
+Invariants (M5-00 Decisions 1, 5-9; M5-02 Decision 21):
 
   - M4 knowledge_units.json is the canonical Source of Truth; the store is a
     derived, rebuildable projection.
@@ -19,12 +24,15 @@ Invariants (M5-00 Decisions 1, 5-9):
     Changed fingerprint => deterministic replace inside one transaction.
   - projection columns are always derived from canonical_payload_json; the
     store never keeps two competing truths.
+  - FTS content rows are derived deterministically from the canonical payload
+    at insert time and kept in sync with the FTS index via SQLite triggers in
+    the same transaction. Old FTS entries always disappear on replace/remove.
   - remove_asset deletes only derived rows (FK cascade); never source files.
   - Schema is versioned via PRAGMA user_version=1; incompatible schema fails
     explicitly (create/validate/rebuild only, no silent migration).
 
-M5-01 does NOT implement FTS5, search, RetrievalQuery/Hit/Result, ranking or
-filters; those belong to M5-02+.
+M5-02 does NOT implement the public Retrieval API (RetrievalQuery/Hit/Result,
+filters, short-query fallback); those belong to M5-03+.
 """
 
 from __future__ import annotations
@@ -45,6 +53,16 @@ from .models import (
     CanonicalKnowledgeUnit,
     CanonicalKnowledgeUnitsDocument,
 )
+from .fts import (
+    FTS_CONTENT_TABLE,
+    FTS_INDEX_TABLE,
+    FTS_POLICY_VERSION,
+    FTS_SCHEMA_SQL,
+    FTS_TOKENIZER,
+    build_fts_content_values,
+    fts_index_count,
+    fts_integrity_check,
+)
 from ..storage import utc_now
 
 STORE_SCHEMA_VERSION = "knowledge-store-v1"
@@ -60,6 +78,8 @@ _STORE_META_POLICY_VERSION_KEY = "schema_policy_version"
 _STORE_META_CREATED_AT_KEY = "created_at"
 _STORE_META_REBUILT_AT_KEY = "rebuilt_at"
 _STORE_META_REVISION_KEY = "store_revision"
+_STORE_META_FTS_POLICY_KEY = "fts_policy_version"
+_STORE_META_FTS_TOKENIZER_KEY = "fts_tokenizer"
 
 
 class StoreError(Exception):
@@ -161,6 +181,8 @@ def _required_tables_exist(conn: sqlite3.Connection) -> bool:
         "evidence_refs",
         "entities",
         "topics",
+        FTS_CONTENT_TABLE,
+        FTS_INDEX_TABLE,
     }
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -241,6 +263,11 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 """
 
+# FTS5 lexical index schema (M5-02) — appended after the canonical store
+# tables. Must come after knowledge_units (FK reference). Defined in fts.py
+# so the tokenizer/policy lives next to the query helpers.
+_SCHEMA_SQL = _SCHEMA_SQL + FTS_SCHEMA_SQL
+
 
 def _any_tables_exist(conn: sqlite3.Connection) -> bool:
     row = conn.execute(
@@ -280,6 +307,8 @@ def create_store(db_path: Path) -> None:
             [
                 (_STORE_META_SCHEMA_VERSION_KEY, STORE_SCHEMA_VERSION),
                 (_STORE_META_POLICY_VERSION_KEY, STORE_SCHEMA_POLICY_VERSION),
+                (_STORE_META_FTS_POLICY_KEY, FTS_POLICY_VERSION),
+                (_STORE_META_FTS_TOKENIZER_KEY, FTS_TOKENIZER),
                 (_STORE_META_CREATED_AT_KEY, now),
                 (_STORE_META_REBUILT_AT_KEY, now),
             ],
@@ -392,10 +421,14 @@ def _insert_unit_rows(
     canonical_id: str,
     unit: CanonicalKnowledgeUnit,
 ) -> None:
-    """Insert one unit's projection + payload + child rows (ordinals preserved)."""
+    """Insert one unit's projection + payload + child rows (ordinals preserved).
+
+    Also inserts the derived FTS content row (knowledge_fts_content); the FTS
+    index row is maintained by SQLite triggers in the same transaction.
+    """
     payload = unit.to_dict()
     projection = _projection_from_payload(payload)
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO knowledge_units (
             knowledge_unit_id, canonical_id, unit_type, statement,
@@ -411,6 +444,16 @@ def _insert_unit_rows(
             projection["extraction_confidence"],
             _payload_json(unit),
         ),
+    )
+    unit_rowid = int(cursor.lastrowid)
+    statement, entity_names, topics, evidence_excerpts = build_fts_content_values(payload)
+    conn.execute(
+        f"""
+        INSERT INTO {FTS_CONTENT_TABLE} (
+            unit_rowid, statement, entity_names, topics, evidence_excerpts
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (unit_rowid, statement, entity_names, topics, evidence_excerpts),
     )
     for ordinal, ref in enumerate(payload["evidence_refs"]):
         temporal = ref.get("temporal_range")
@@ -457,7 +500,21 @@ def _insert_unit_rows(
 
 
 def _delete_asset_rows(conn: sqlite3.Connection, canonical_id: str) -> None:
-    """Delete an asset's derived rows (cascades via FK to child tables)."""
+    """Delete an asset's derived rows (cascades via FK to child tables).
+
+    FTS content rows are deleted explicitly (rather than relying on the FK
+    cascade from knowledge_units) so the FTS delete trigger deterministically
+    removes the asset's index entries in the same transaction.
+    """
+    conn.execute(
+        f"""
+        DELETE FROM {FTS_CONTENT_TABLE}
+        WHERE unit_rowid IN (
+            SELECT unit_rowid FROM knowledge_units WHERE canonical_id = ?
+        )
+        """,
+        (canonical_id,),
+    )
     conn.execute(
         "DELETE FROM ingested_assets WHERE canonical_id = ?", (canonical_id,)
     )
@@ -668,6 +725,15 @@ def remove_asset(db_path: Path, canonical_id: str) -> dict[str, Any]:
                 conn.commit()
                 return {"removed": False, "canonical_id": canonical_id, "unit_count": 0}
             conn.execute(
+                f"""
+                DELETE FROM {FTS_CONTENT_TABLE}
+                WHERE unit_rowid IN (
+                    SELECT unit_rowid FROM knowledge_units WHERE canonical_id = ?
+                )
+                """,
+                (canonical_id,),
+            )
+            conn.execute(
                 "DELETE FROM ingested_assets WHERE canonical_id = ?",
                 (canonical_id,),
             )
@@ -816,6 +882,11 @@ def validate_store(db_path: Path) -> StoreValidationResult:
             "ku_asset_mismatches": 0,
             "duplicate_ordinals": 0,
             "invalid_ordinals": 0,
+            "fts_content_rows": 0,
+            "fts_index_rows": 0,
+            "fts_missing_content": 0,
+            "fts_orphan_content": 0,
+            "fts_integrity_violations": 0,
         }
         counters["assets"] = conn.execute(
             "SELECT COUNT(*) FROM ingested_assets"
@@ -894,6 +965,56 @@ def validate_store(db_path: Path) -> StoreValidationResult:
             conn, "topics", "knowledge_unit_id", "knowledge_unit_id",
             violations, counters,
         )
+
+        # FTS lexical index consistency (M5-02)
+        counters["fts_content_rows"] = conn.execute(
+            f"SELECT COUNT(*) FROM {FTS_CONTENT_TABLE}"
+        ).fetchone()[0]
+        counters["fts_index_rows"] = fts_index_count(conn)
+        if counters["fts_content_rows"] != counters["units"]:
+            violations.append(
+                f"FTS content rows ({counters['fts_content_rows']}) != "
+                f"knowledge_units ({counters['units']})"
+            )
+        # Missing content rows: unit_rowid in knowledge_units but not in content.
+        missing = conn.execute(
+            f"""
+            SELECT ku.unit_rowid FROM knowledge_units ku
+            LEFT JOIN {FTS_CONTENT_TABLE} fts ON fts.unit_rowid = ku.unit_rowid
+            WHERE fts.unit_rowid IS NULL
+            """
+        ).fetchall()
+        for row in missing:
+            counters["fts_missing_content"] += 1
+            violations.append(
+                f"unit_rowid {row['unit_rowid']} missing FTS content row"
+            )
+        # Orphan content rows: in content but no corresponding unit.
+        orphan = conn.execute(
+            f"""
+            SELECT fts.unit_rowid FROM {FTS_CONTENT_TABLE} fts
+            LEFT JOIN knowledge_units ku ON ku.unit_rowid = fts.unit_rowid
+            WHERE ku.unit_rowid IS NULL
+            """
+        ).fetchall()
+        for row in orphan:
+            counters["fts_orphan_content"] += 1
+            violations.append(
+                f"orphan FTS content row for unit_rowid {row['unit_rowid']}"
+            )
+        # FTS5 integrity-check (raises OperationalError on inconsistency).
+        try:
+            fts_integrity_check(conn)
+        except sqlite3.OperationalError as exc:
+            counters["fts_integrity_violations"] += 1
+            violations.append(f"FTS integrity-check failed: {exc}")
+        # FTS policy version must match the code's frozen policy.
+        fts_policy = _read_store_meta(conn, _STORE_META_FTS_POLICY_KEY)
+        if fts_policy != FTS_POLICY_VERSION:
+            violations.append(
+                f"store_meta fts_policy_version={fts_policy!r}, "
+                f"expected {FTS_POLICY_VERSION!r}"
+            )
 
         # Store revision (deterministic; reuse this connection, no nesting)
         revision = _compute_revision(conn)

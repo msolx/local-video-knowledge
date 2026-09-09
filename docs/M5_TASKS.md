@@ -2,7 +2,7 @@
 
 > **Milestone Target**: A derived, rebuildable SQLite Knowledge Store over the canonical M4 `knowledge_units.json` artifacts, plus a stable lexical retrieval contract with full evidence expansion. Offline and deterministic; no LLM, no embeddings.
 > **Working Branch**: `feat/m5-knowledge-store-retrieval`
-> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `TODO` | M5-03 = `TODO` | M5-04 = `TODO` | M5-05 = `TODO` | M5-06 = `TODO`
+> **Status Matrix**: M5-00 = `DONE / SEALED` | M5-01 = `DONE` | M5-02 = `DONE` | M5-03 = `TODO` | M5-04 = `TODO` | M5-05 = `TODO` | M5-06 = `TODO`
 
 ---
 
@@ -12,7 +12,7 @@
 | :--- | :--- | :---: | :---: | :--- | :--- |
 | **M5-00** | **Contract Design** | Sealed | **`DONE / SEALED`** | M4 Acceptance | `docs/M5_*.md` (Design & Contract Freeze) |
 | **M5-01** | **Canonical Knowledge Store & Idempotent Ingestion** | Complete | **`DONE`** | M5-00 | `src/knowledge/store.py`, `tests/test_knowledge_store.py` |
-| **M5-02** | **SQLite FTS5 Lexical / Metadata Indexing** | — | **`TODO`** | M5-01 | `src/knowledge/indexing.py`, `tests/test_knowledge_indexing.py` |
+| **M5-02** | **SQLite FTS5 Lexical / Metadata Indexing** | Complete | **`DONE`** | M5-01 | `src/knowledge/fts.py`, `tests/test_knowledge_fts.py` |
 | **M5-03** | **Retrieval API & Evidence Expansion** | — | **`TODO`** | M5-01, M5-02 | `src/knowledge/retrieval.py`, `tests/test_knowledge_retrieval.py` |
 | **M5-04** | **Filtering, Ranking & Query Diagnostics** | — | **`TODO`** | M5-03 | `src/knowledge/retrieval.py` (filter/rank layer), `tests/test_knowledge_retrieval_filters.py` |
 | **M5-05** | **Retrieval Evaluation Harness & C10 Golden Queries** | — | **`TODO`** | M5-03, M5-04 | `scripts/run_m5_05_evaluation.py`, `tests/test_m5_retrieval_evaluation.py` |
@@ -27,7 +27,7 @@
 - **Deliverables**:
   - `docs/M5_KNOWLEDGE_STORE_DESIGN.md`: Authoritative design specification (v1.0).
   - `docs/M5_HANDOFF.md`: Master handoff and cross-agent protocol.
-  - `docs/M5_DECISIONS.md`: Architectural decisions log (Decisions 1-20).
+  - `docs/M5_DECISIONS.md`: Architectural decisions log (Decisions 1-23).
   - `docs/M5_TASKS.md`: Task board and progression matrix.
 
 ### M5-01: Canonical Knowledge Store & Idempotent Ingestion (`DONE`)
@@ -51,13 +51,55 @@
     - Second identical ingest → `unchanged` (cache hit), row counts byte-identical.
   - Full regression: **1033 passed, 10 skipped** (M4 baseline 986 + 47 new store tests; zero regressions).
 
-### M5-02: SQLite FTS5 Lexical / Metadata Indexing (`TODO`)
+### M5-02: SQLite FTS5 Lexical / Metadata Indexing (`DONE`)
 - **Objective**: Add the weighted FTS5 lexical index and keep it atomically in sync with structured rows.
-- **Target Scope**:
-  - `src/knowledge/indexing.py`: external-content `units_fts` over `statement`, `entity_names`, `topics`, `evidence_excerpts` with explicit `bm25()` column weights (statement highest, evidence lowest).
-  - Atomic index refresh inside the ingestion transaction; no rows-vs-index divergence.
-  - Metadata projections/indexes for `canonical_id`, `unit_type`, `verification_status`.
-- **Deliverable**: `src/knowledge/indexing.py`, `tests/test_knowledge_indexing.py`.
+- **Delivered**:
+  - `src/knowledge/fts.py`:
+    - Frozen policy: `FTS_POLICY_VERSION = "m5-fts-trigram-v1"`,
+      `FTS_TOKENIZER = "trigram"`, `FTS_COLUMNS = (statement, entity_names,
+      topics, evidence_excerpts)`, `FTS_FIELD_WEIGHTS = {statement: 5.0,
+      entity_names: 2.0, topics: 2.0, evidence_excerpts: 1.0}`.
+    - `FTS_SCHEMA_SQL`: derived materialized table `knowledge_fts_content`
+      (`unit_rowid INTEGER PRIMARY KEY` 1:1 with `knowledge_units.unit_rowid`;
+      `statement/entity_names/topics/evidence_excerpts TEXT NOT NULL`) +
+      external-content FTS5 `knowledge_fts` (`content='knowledge_fts_content'`,
+      `content_rowid='unit_rowid'`, `tokenize='trigram'`) + sync triggers
+      `knowledge_fts_ai` / `_ad` / `_au` (index updated in the same transaction).
+    - `build_fts_content_values(payload)`: deterministic projection — statement
+      verbatim; entity/topic/evidence joined in canonical ordinal order; never
+      re-sorted, never summarized, never attribution/verification/confidence.
+    - `literal_fts_query(q)`: entire input wrapped in double quotes with embedded
+      quotes doubled → literal FTS5 phrase; disables all query-language syntax;
+      always parameterized (never spliced into SQL).
+    - `lexical_search_rows(conn, query_text, limit, weights=...)`: low-level
+      internal helper returning `(unit_rowid, bm25_score)` ordered best-first;
+      `fts_index_count`; `fts_integrity_check`. Public Retrieval API is M5-03.
+  - `src/knowledge/store.py` (extended, M5-01 semantics untouched): schema now
+    includes FTS tables + triggers; `store_meta` records `fts_policy_version` +
+    `fts_tokenizer`; `_insert_unit_rows` materializes FTS content rows;
+    `_delete_asset_rows`/`remove_asset` explicitly delete FTS content rows in the
+    same transaction; `validate_store` checks content==unit counts, missing /
+    orphan FTS content, FTS5 `integrity-check`, and policy version.
+  - **Tokenizer decision**: pre-flight probe on SQLite 3.45.3 showed `unicode61`
+    tokenizes each CJK(+Latin) run as one token, so Chinese words and Latin
+    tokens in mixed text (Vulkan/27B/RDNA/Thinking) cannot be matched. Frozen
+    `trigram` instead (all ≥3-char queries match). Short (<3 char) queries are a
+    documented known limitation with no fallback this round. Recorded as
+    Decision 21 (bounded implementation correction, not a contract redesign).
+  - `tests/test_knowledge_fts.py`: 45 collected tests (FTS5/trigram availability,
+    schema presence, unit_rowid mapping, statement/entity/topic/evidence
+    indexing, field-weight preference statement>evidence, insert/replace/remove/
+    rollback/rebuild sync, validation catches missing/orphan FTS content,
+    repeated-ingest no dup, unicode + CN/EN mixed, literal quote/punctuation/SQL
+    injection safety, empty query, deterministic ranking, store revision
+    unaffected by FTS, tokenizer policy persisted, short-query limitation, real
+    C10 video+album golden queries incl. real Chinese/mixed terms).
+  - Real C10 FTS (temp/test DB only): 2 assets / 68 units → FTS content == index
+    == 68; Vulkan/RDNA/Thinking/27B/logitech/AGON/SMILEY/大模型/思考模式/任务类型/
+    Vulkan后端/Strax Halo/AMX395 all return hits from the correct asset;
+    validation valid.
+  - Full regression: **1078 passed, 10 skipped** (M5-01 baseline 1033 + 45 new
+    FTS tests; zero regressions).
 
 ### M5-03: Retrieval API & Evidence Expansion (`TODO`)
 - **Objective**: Implement the retrieval contract with mandatory full evidence expansion.

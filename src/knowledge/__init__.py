@@ -116,6 +116,19 @@ from .store import (
     discover_final_artifacts,
     rebuild_store,
 )
+from .fts import (
+    FTS_POLICY_VERSION,
+    FTS_TOKENIZER,
+    FTS_COLUMNS,
+    FTS_FIELD_WEIGHTS,
+    FTS_CONTENT_TABLE,
+    FTS_INDEX_TABLE,
+    build_fts_content_values,
+    literal_fts_query,
+    lexical_search_rows,
+    fts_index_count,
+    fts_integrity_check,
+)
 
 __all__ = [
     "TranscriptChunk",
@@ -234,5 +247,17 @@ __all__ = [
     "validate_store",
     "discover_final_artifacts",
     "rebuild_store",
+    # M5-02 SQLite FTS5 Lexical / Metadata Indexing
+    "FTS_POLICY_VERSION",
+    "FTS_TOKENIZER",
+    "FTS_COLUMNS",
+    "FTS_FIELD_WEIGHTS",
+    "FTS_CONTENT_TABLE",
+    "FTS_INDEX_TABLE",
+    "build_fts_content_values",
+    "literal_fts_query",
+    "lexical_search_rows",
+    "fts_index_count",
+    "fts_integrity_check",
 ]
 
