@@ -223,7 +223,7 @@
   - Accept and close Milestone M3 as fully `COMPLETE`.
   - Enforce clear boundary for Milestone M4 (Unified Knowledge Model):
     - M3 strictly ends at deterministic evidence chunking (`evidence_chunks.json`).
-    - M4 starts with semantic knowledge extraction, summarization, entity/claim linking, knowledge graph, and Markdown note publishing.
+    - M4 (Unified Knowledge Model) candidate scope covers knowledge units, claim/opinion extraction, entity linking, and verification workflow (note publishing and knowledge graph scope to be planned subsequently).
     - Zero knowledge extraction or LLM synthesis occurs in M3.
   - Formally document all acceptance metrics in `docs/M3_FINAL_ACCEPTANCE.md`.
 

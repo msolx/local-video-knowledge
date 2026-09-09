@@ -317,7 +317,7 @@ Next Milestone : Milestone M4: Unified Knowledge Model (NOT STARTED - Awaiting U
      - src/visual/album.py (Image Album OCR/VLM processing, sequence preservation)
      - src/provenance.py (EvidenceItem, Evidence Manifest, 1:1 artifact binding)
      - src/chunking/ (EvidenceChunk, ChunkingPolicy, deterministic windowing)
-     - data/processed/<canonical_id>/evidence_manifest.json (schema: media-evidence-manifest-v1)
+     - data/processed/<canonical_id>/evidence_manifest.json (schema: evidence-manifest-v1)
      - data/processed/<canonical_id>/evidence_chunks.json (schema: evidence-chunks-v1)
      - docs/M3_FINAL_ACCEPTANCE.md (authoritative signoff document)
 
@@ -337,10 +337,14 @@ Next Milestone : Milestone M4: Unified Knowledge Model (NOT STARTED - Awaiting U
    - MILESTONE M3 -> COMPLETE
 
 5. MILESTONE M4 BOUNDARY & PREREQUISITES:
-   - Milestone M4 encompasses the Unified Knowledge Model:
-     * Semantic summarization of Evidence Chunks via LLM
-     * Knowledge extraction (claims, opinions, entities) bound to EvidenceItem IDs
-     * Multi-modal knowledge graph and Markdown note generation
+   - Milestone M4 status: NOT STARTED (Awaiting User Authorization).
+   - Candidate scope under consideration for M4:
+     * Unified Knowledge Model and Knowledge Units
+     * Claim and author opinion extraction linked back to EvidenceItem IDs
+     * Entity linking across multi-modal evidence
+     * Verification workflow (progressing from "not_checked" to verified/contested)
+   - Deferred beyond M4 (or subject to subsequent milestone planning):
+     * Obsidian vault note publishing, RAG vector storage, and full knowledge graph publishing are NOT mandatory M4 deliverables.
    - DO NOT start M4 until the user explicitly issues authorization and instructions for M4.
    - When M4 begins, read:
      * docs/M3_FINAL_ACCEPTANCE.md

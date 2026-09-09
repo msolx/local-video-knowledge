@@ -71,7 +71,7 @@ All processing operates **100% offline**, maintains **100% archive immutability*
    - Workspaces isolated strictly under `data/processed/<canonical_id>/`.
    - Fine-grained stage cutoffs via `stop_after: str | None`.
 4. **Evidence Manifest Layer (`src/provenance.py`)**:
-   - File: `data/processed/<canonical_id>/evidence_manifest.json` (Schema: `media-evidence-manifest-v1`).
+   - File: `data/processed/<canonical_id>/evidence_manifest.json` (Schema: `evidence-manifest-v1`).
    - Granular `EvidenceItem` records with 1:1 binding to formal archive artifacts.
 5. **Evidence Chunking Layer (`src/chunking/`)**:
    - File: `data/processed/<canonical_id>/evidence_chunks.json` (Schema: `evidence-chunks-v1`).
@@ -98,8 +98,9 @@ All processing operates **100% offline**, maintains **100% archive immutability*
   - Speech Segments: **184 segments**
   - Temporal Duration: `0.0s` to `370.58s`
   - Text Content: Fully recognized speech with segment-level start/end timestamps.
+  - Artifact Integrity: Transcript artifact integrity verified offline on physical disk (epistemic status strictly remains `verification_status: "not_checked"` for factual veracity of speech content).
 - **Evidence Manifest (`evidence_manifest.json`)**:
-  - Schema: `media-evidence-manifest-v1`
+  - Schema: `evidence-manifest-v1`
   - Total Evidence Items: **184 items**
   - Modality: `speech`
   - Formal Artifact Binding: Every item is bound 1:1 to artifact role `PRIMARY_VIDEO`, filename `7681603850364521734.mp4`, SHA-256 `3959a056...`, and size `173,847,684 bytes`.
@@ -109,10 +110,10 @@ All processing operates **100% offline**, maintains **100% archive immutability*
   - Schema: `evidence-chunks-v1`
   - Chunk Policy: `max_duration_seconds: 120.0`, `max_tokens: 1000`, `max_segments: 50`, `overlap_segments: 2`.
   - Resulting Chunks: **4 chunks**
-    * `chk_000001`: 48 evidence refs, temporal `[0.0s, 102.5s]`, overlap refs: 0.
-    * `chk_000002`: 50 evidence refs, temporal `[98.88s, 204.82s]`, overlap refs: 2 (`ev_seg_000047`, `ev_seg_000048`).
-    * `chk_000003`: 50 evidence refs, temporal `[203.56s, 298.14s]`, overlap refs: 2 (`ev_seg_000095`, `ev_seg_000096`).
-    * `chk_000004`: 42 evidence refs, temporal `[294.02s, 370.58s]`, overlap refs: 2 (`ev_seg_000143`, `ev_seg_000144`).
+    * `chk_000001`: 48 evidence refs (`ev_seg_000001` -> `ev_seg_000048`), temporal `[0.0s, 117.52s]` (duration: 117.52s), overlap refs: 0.
+    * `chk_000002`: 50 evidence refs (`ev_seg_000047` -> `ev_seg_000096`), temporal `[112.42s, 212.54s]` (duration: 100.12s), overlap refs: 2 (`ev_seg_000047`, `ev_seg_000048`).
+    * `chk_000003`: 50 evidence refs (`ev_seg_000095` -> `ev_seg_000144`), temporal `[208.34s, 298.18s]` (duration: 89.84s), overlap refs: 2 (`ev_seg_000095`, `ev_seg_000096`).
+    * `chk_000004`: 42 evidence refs (`ev_seg_000143` -> `ev_seg_000184`), temporal `[294.66s, 370.58s]` (duration: 75.92s), overlap refs: 2 (`ev_seg_000143`, `ev_seg_000144`).
   - Total Evidence References: `48 + 50 + 50 + 42 = 190`
   - Unique Evidence Referenced: `184 / 184` (100% complete coverage).
   - Duplicate Overlap References: `6` (exactly 2 segments per boundary across 3 boundaries).
@@ -146,7 +147,7 @@ All processing operates **100% offline**, maintains **100% archive immutability*
     * Image 3 (`sequence_index: 3`): 1 OCR line (`"成就名厨梦想 就选新东方"`, conf: 0.989)
     * Image 3 (`sequence_index: 3`): 1 VLM unresolved reference (`status: "unresolved_visual_reference"`)
 - **Evidence Manifest (`evidence_manifest.json`)**:
-  - Schema: `media-evidence-manifest-v1`
+  - Schema: `evidence-manifest-v1`
   - Total Evidence Items: **4 items** (3 `visual_text` + 1 `visual_description`)
   - Formal Artifact Binding: Bound 1:1 to artifact role `ALBUM_IMAGE`, sequence indices 1, 2, 3, matching WebP filenames and SHA-256s.
   - Epistemic Status: `verification_status = "not_checked"`.
@@ -347,19 +348,22 @@ git diff --stat m2-douyin-complete-r1..HEAD src/collector/ src/downloader/
 ### 14.1 Known Limitations & Deliberate Scope Boundaries in M3
 1. **No Semantic Summarization**: M3 stops at deterministic evidence windowing. Chunks contain raw evidence IDs, timestamps, and modality references. No LLM summaries or key takeaway syntheses are generated in M3.
 2. **No Claim / Entity Extraction**: M3 evidence items represent sensory data (ASR text, OCR text). No author opinions, factual claims, or named entities are extracted.
-3. **No Knowledge Graph / Obsidian Notes**: Output files are machine-readable JSON manifests (`evidence_manifest.json`, `evidence_chunks.json`). Knowledge note rendering (e.g. Obsidian Markdown, RAG vectors) belongs to M4.
+3. **No Knowledge Graph / Obsidian Notes**: Output files are machine-readable JSON manifests (`evidence_manifest.json`, `evidence_chunks.json`). Knowledge note rendering (e.g. Obsidian Markdown, RAG vectors) is deferred to future milestone planning.
 4. **VLM Optional Fallback**: Local VLM inference remains optional and decoupled. When disabled, OCR text is fully extracted and visual descriptions are recorded as `unresolved_visual_reference`.
 
-### 14.2 Scope Boundary for Milestone M4 (Unified Knowledge Model)
-When Milestone M4 is authorized, the incoming agent starts with:
-- `data/processed/<canonical_id>/evidence_manifest.json`
-- `data/processed/<canonical_id>/evidence_chunks.json`
+### 14.2 Scope Boundary for Milestone M4 (Unified Knowledge Model - Candidate Scope)
+Milestone M4 is currently **NOT STARTED** (awaiting explicit user authorization).
 
-M4 will implement:
-- Semantic chunk summarization via LLM.
-- Claim, opinion, and entity extraction linked back to `EvidenceItem.evidence_id`.
-- Epistemic verification layer (progressing from `"not_checked"` to verified/contested statuses).
-- Unified multi-modal knowledge graph and Markdown note generation.
+Candidate scope under consideration for M4:
+- Unified Knowledge Model and Knowledge Units
+- Claim and author opinion extraction linked back to `EvidenceItem.evidence_id`
+- Entity linking across multi-modal evidence
+- Verification workflow (progressing from `"not_checked"` to verified/contested statuses)
+
+Deferred to subsequent milestone planning (NOT committed as mandatory M4 deliverables):
+- Obsidian vault note rendering and publishing
+- RAG index construction and vector storage
+- Full multi-modal knowledge graph publishing
 
 ---
 
