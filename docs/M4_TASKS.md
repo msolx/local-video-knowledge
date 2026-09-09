@@ -2,7 +2,7 @@
 
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
-> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE / SEALED` | M4-04 = `DONE` | M4-05 ~ M4-06 = `TODO`
+> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE / SEALED` | M4-04 = `DONE` | M4-05 = `DONE` | M4-06 = `TODO`
 
 ---
 
@@ -15,7 +15,7 @@
 | **M4-02** | **Chunk-Level Extraction Pipeline** | Sealed | **`DONE / SEALED`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
 | **M4-03** | **Cross-Chunk Deduplication & Merging** | Sealed | **`DONE / SEALED`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
 | **M4-04** | **Entity & Topic Attachment** | Complete | **`DONE`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
-| **M4-05** | **Verification Contract & Audit Render** | TBD | **`TODO`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
+| **M4-05** | **Verification Contract & Audit Render** | Complete | **`DONE`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
 | **M4-06** | **M4 End-to-End Acceptance** | TBD | **`TODO`** | M4-01 ~ M4-05 | Full offline regression & formal asset acceptance |
 
 ---
@@ -89,13 +89,21 @@
     - LM Studio `qwen/qwen3-8b`: C10 Video 62 → 62 units (132 entity mentions, 97 topics, 0 rejected, 0 identity violations, 7 LLM calls); C10 Album 6 → 6 units (6 entity mentions incl. OCR surfaces `logitech`/`INAMAX`/`AGON`/`SMILEY`, 6 topics, 0 rejected, 0 identity violations, 1 LLM call).
     - Cache hit verified with 0 LLM calls and identical unit IDs.
 
-### M4-05: Verification Contract & Audit Render (`TODO`)
+### M4-05: Verification Contract & Audit Render (`DONE`)
 - **Objective**: Serialize canonical knowledge artifacts to disk and provide human-readable audit representation.
-- **Target Scope**:
-  - Verification state contract (`not_checked`, `verified`, `contested`, `unsupported`).
-  - Generate `data/processed/<canonical_id>/knowledge/knowledge_units.json` (schema: `knowledge-units-v1`).
-  - Generate internal audit markdown `data/processed/<canonical_id>/knowledge/knowledge.md` linking claims to exact evidence excerpts (explicit non-goal: NOT Obsidian publishing).
-  - Unit test suite: `tests/test_knowledge_render.py`.
+- **Delivered**:
+  - `src/knowledge/render.py`:
+    - `RenderConfig`, `compute_enriched_artifact_fingerprint`, `compute_finalization_fingerprint`: deterministic cache identity over enriched artifact content, `knowledge_schema_version`, and render policy version.
+    - `validate_verification_status`: only `not_checked`/`verified`/`contested`/`unsupported` accepted; illegal values fail validation. M4-05 never generates or recomputes verification states.
+    - `build_final_document`: constructs `knowledge_units.json` (schema `knowledge-units-v1`) strictly via `CanonicalKnowledgeUnitsDocument`; units carried verbatim from M4-04; real M4-02 `extraction_provenance` copied verbatim (never fabricated).
+    - `audit_finalization_identity`: programmatic per-unit comparison of ALL canonical fields (including `entities`/`topics`/`lineage`) between enriched and final; `identity_violation_count == 0` required.
+    - `escape_source_excerpt` (blockquote + backslash/backtick/HTML escaping) and `render_audit_markdown` (`# Knowledge Audit` → Asset → Finalization → Summary (type & verification counts) → per-KU sections with type/statement/verification/confidence/source-actor-vs-speaker/entities/topics/evidence-excerpts/coordinates/lineage).
+    - `finalize_knowledge_document`: filesystem pipeline writing `knowledge_units.json`, `knowledge.md`, and `knowledge_finalization.json` (wrapper/cache metadata); idempotent cache hit never rewrites `generated_at` and never re-invokes extractor/merger/enrichment/LLM. No model runtime is ever started or probed.
+  - `tests/test_knowledge_render.py`: 44 collected tests (document validity, unit count identity, all 11 canonical fields unchanged, verification render for all four states without generating verification, source-actor vs speaker distinction, unknown/visual_media/system_derived attribution, temporal/sequence/both/neither coordinates, exact excerpt retention, Markdown injection safety, entity/topic render, stable unit & evidence ordering, zero-unit document, deterministic JSON & Markdown, cache hit, enriched-fingerprint and render-policy invalidation, invalid verification status rejection, canonical identity mismatch rejection, no-secret persistence, real C10 video & album fixtures).
+  - Real C10 finalization (offline, no LLM):
+    - C10 Video: 62 → 62 units, 0 identity violations, all `claim` / `not_checked`, 62 units with entities (132 mentions, 104 distinct), 62 units with topics (97 total, 89 distinct).
+    - C10 Album: 6 → 6 units, 0 identity violations, all `claim` / `not_checked`, 6 entities (`logitech`, `INAMAX`, `lognach`, `AGON`, `SMILEY`, `081`), 6 topics (`brand mention`, `text mention`); OCR excerpts rendered verbatim as blockquotes.
+    - Cache hit verified: repeated `finalize_knowledge_document` returns byte-identical `knowledge_units.json` / `knowledge.md`.
 
 ### M4-06: M4 End-to-End Acceptance (`TODO`)
 - **Objective**: Execute end-to-end regression across all formal test assets (C10 Video & C10 Album).

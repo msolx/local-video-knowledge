@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `DONE / SEALED`, M4-04 = `DONE`, M4-05 = `TODO`)
+> **Milestone Status**: `IN_PROGRESS` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `DONE / SEALED`, M4-04 = `DONE`, M4-05 = `DONE`, M4-06 = `TODO`)
 > **Source Baseline**: Milestone M3 Sealed at Tag `m3-media-integration-complete` (`1f1c3b9a604d2fbdb9bb63606d6392aa893c080e`).  
 > **Working Branch**: `feat/m4-unified-knowledge-model`
 
@@ -32,6 +32,12 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
   - C10 Video: 62 in → 62 out; 62 units with entities (132 mentions), 62 units with topics (97 topics), 0 rejected proposals, 0 identity violations.
   - C10 Album: 6 in → 6 out; 6 units with entities (6 mentions, OCR surfaces like `logitech`, `INAMAX`, `AGON`, `SMILEY`, `lognach`, `081`), 6 units with topics, 0 rejected proposals, 0 identity violations.
   - Cache hit verified: identical config returns in <0.01s with 0 LLM calls and identical unit IDs.
+- `src/knowledge/render.py` (M4-05): Deterministic finalization & audit render (verification contract validation, `CanonicalKnowledgeUnitsDocument` construction, per-unit identity audit, blockquote-based Markdown safety, finalization fingerprint/cache, filesystem pipeline writing `knowledge_units.json` + `knowledge.md` + `knowledge_finalization.json`).
+- `tests/test_knowledge_render.py`: 44 collected tests covering document validity, unit count identity, all 11 canonical fields unchanged, verification render for all four states (without generating verification), source-actor-vs-speaker attribution, unknown/visual_media/system_derived rendering, temporal/sequence/both/neither coordinates, exact excerpt retention, Markdown injection safety, entity/topic render, stable unit & evidence ordering, zero-unit document, deterministic JSON & Markdown, cache hit + invalidation, invalid verification status rejection, canonical identity mismatch rejection, no-secret persistence, and real C10 fixtures.
+- Real C10 finalization (M4-05, offline, 0 LLM calls):
+  - C10 Video: `knowledge_units.json` 62 units, `knowledge.md` ~59 KB, 0 identity violations, all `claim`/`not_checked`.
+  - C10 Album: `knowledge_units.json` 6 units, `knowledge.md` ~4.5 KB, 0 identity violations, OCR excerpts rendered verbatim.
+  - Cache hit verified: repeated runs return byte-identical artifacts without rewriting `generated_at`.
 
 ---
 
@@ -72,6 +78,11 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
     - `entity_name` must have direct textual support in the unit statement or a cited excerpt (NFKC + casefold + whitespace collapse). No fuzzy/embedding/alias/external-knowledge completion.
     - Only `entities` and `topics` may change; `verification_status` stays `not_checked`, all frozen fields byte-identical. Per-unit failures preserve the original unit and are recorded in the wrapper audit.
     - `enriched_knowledge_candidates.json` (schema `m4-enriched-candidates-v1`) is an intermediate artifact, not the M4-05 `knowledge_units.json`.
+12. **M4-05 Finalization & Audit Render**:
+    - `knowledge_units.json` (schema `knowledge-units-v1`) is constructed via `CanonicalKnowledgeUnitsDocument` with units byte-identical to the enriched artifact; only wrapper/document metadata may change.
+    - M4-05 performs no fact checking and never changes `verification_status`; legal states are only `not_checked`/`verified`/`contested`/`unsupported`, and the input state is preserved verbatim.
+    - `knowledge.md` is an internal audit representation (NOT Obsidian publishing); it renders excerpts verbatim with deterministic escaping/blockquote safety, distinguishes source actor from speaker, and never implies evidence presence equals factual verification.
+    - Finalization fingerprint = SHA-256 over enriched artifact content fingerprint + `knowledge_schema_version` + render policy version; cache hits are byte-identical and never rewrite `generated_at`. No LLM/runtime is started or probed.
 
 ---
 
@@ -89,6 +100,13 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
 | **`douyin_7681603850364521734`** | 62 | 62 | 62 | 132 | 62 | 97 | 0 | 0 | 7 | <0.01s |
 | **`douyin_7682038498466993905`** | 6 | 6 | 6 | 6 | 6 | 6 | 0 | 0 | 1 | <0.01s |
 
+### M4-05 Finalization Baselines (offline, deterministic, 0 LLM calls)
+
+| Asset ID | Enriched Units | Final Units | Identity Violations | Unit Types | Verification Statuses | `knowledge.md` Size |
+| :--- | :---: | :---: | :---: | :--- | :--- | :---: |
+| **`douyin_7681603850364521734`** | 62 | 62 | 0 | claim × 62 | not_checked × 62 | ~59 KB |
+| **`douyin_7682038498466993905`** | 6 | 6 | 0 | claim × 6 | not_checked × 6 | ~4.5 KB |
+
 ---
 
 ## 4. Worktree State & Git Hygiene
@@ -102,22 +120,37 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
   - `src/knowledge/enrichment.py`
   - `tests/test_knowledge_enrichment.py`
   - `scripts/run_m4_04_real_smoke.py`
+- **M4-05 Additions**:
+  - `src/knowledge/render.py`
+  - `tests/test_knowledge_render.py`
 - **Zero M2/M3 Code Touched**: Files in `src/collector/`, `src/downloader/`, `src/media_adapter/`, `src/visual/`, `src/chunking/`, `src/provenance.py` remain completely untouched.
-- **Final Reconciliation Targeted Suite**: 166 passed (`test_knowledge_models.py` + `test_knowledge_extraction.py` + `test_knowledge_dedup.py` + `test_knowledge_enrichment.py`).
-- **Full Regression**: 909 passed, 10 skipped; M2/M3 implementation remained untouched.
+- **Final Reconciliation Targeted Suite**: 210 passed (`test_knowledge_models.py` + `test_knowledge_extraction.py` + `test_knowledge_dedup.py` + `test_knowledge_enrichment.py` + `test_knowledge_render.py`).
+- **Full Regression**: 953 passed, 10 skipped; M2/M3 implementation remained untouched.
+
+### Operator Note: Local LLM Runtime Preference
+
+Future local LLM runtime preference:
+
+1. Prefer llama.cpp at: `G:\llama.cpp`
+2. Local model storage: `D:\LMmodel`
+3. LM Studio is no longer the default runtime.
+4. Tasks that do not require LLM inference must not start or probe either runtime.
+
+This is an operator/runtime note only; it does not modify any M4 schema.
 
 ---
 
 ## 5. NEXT_AGENT_START_HERE
-- **Task**: `M4-05 · Verification Contract & Audit Render`
-- **Objective**: Serialize the enriched canonical knowledge units to disk and provide a human-readable audit representation; do not re-extract, re-merge, or re-enrich.
+- **Task**: `M4-06 · M4 End-to-End Acceptance`
+- **Objective**: Execute end-to-end regression across all formal test assets (C10 Video & C10 Album) and finalize the milestone with `docs/M4_FINAL_ACCEPTANCE.md`.
 - **Entry Points**:
-  - `data/processed/<canonical_id>/knowledge/enriched_knowledge_candidates.json` (authoritative M4-04 enriched intermediate input)
-  - `src/knowledge/models.py` (canonical domain definitions)
-  - `src/knowledge/render.py` (to be created)
-  - `tests/test_knowledge_render.py` (to be created)
+  - `data/processed/douyin_7681603850364521734/knowledge/knowledge_units.json` + `knowledge.md` (final canonical outputs)
+  - `data/processed/douyin_7682038498466993905/knowledge/knowledge_units.json` + `knowledge.md`
+  - `src/knowledge/render.py` (M4-05 finalization & audit render)
+  - `docs/M4_KNOWLEDGE_MODEL_DESIGN.md` (sealed schema contract)
 - **Scope**:
-  - Generate `data/processed/<canonical_id>/knowledge/knowledge_units.json` (schema: `knowledge-units-v1`).
-  - Generate internal audit markdown `knowledge.md` linking claims to exact evidence excerpts (NOT Obsidian publishing).
-  - Verification state contract: `not_checked`, `verified`, `contested`, `unsupported`.
+  - Validate JSON schema conformance (`knowledge-units-v1`).
+  - Verify deterministic IDs, canonical evidence ordering, unit-aware lineage, and audit rendering.
+  - Deliverable: `docs/M4_FINAL_ACCEPTANCE.md`.
+- **Operator Note**: Future local LLM runtime preference is llama.cpp (`G:\llama.cpp`) with models in `D:\LMmodel`; LM Studio is no longer the default. Inference-free tasks must not start or probe either runtime.
 

@@ -73,6 +73,23 @@ from .enrichment import (
     enrich_knowledge_candidates,
     audit_identity_preservation,
 )
+from .render import (
+    FINALIZATION_SCHEMA_VERSION,
+    RENDER_POLICY_VERSION,
+    FINAL_DOCUMENT_FILENAME,
+    FINAL_RENDER_FILENAME,
+    FINALIZATION_FILENAME,
+    ALLOWED_VERIFICATION_STATUSES,
+    RenderConfig,
+    compute_enriched_artifact_fingerprint,
+    compute_finalization_fingerprint,
+    validate_verification_status,
+    audit_finalization_identity,
+    build_final_document,
+    escape_source_excerpt,
+    render_audit_markdown,
+    finalize_knowledge_document,
+)
 
 __all__ = [
     "TranscriptChunk",
@@ -150,5 +167,21 @@ __all__ = [
     "enrich_merged_candidates_artifact",
     "enrich_knowledge_candidates",
     "audit_identity_preservation",
+    # M4-05 Verification Contract & Audit Render
+    "FINALIZATION_SCHEMA_VERSION",
+    "RENDER_POLICY_VERSION",
+    "FINAL_DOCUMENT_FILENAME",
+    "FINAL_RENDER_FILENAME",
+    "FINALIZATION_FILENAME",
+    "ALLOWED_VERIFICATION_STATUSES",
+    "RenderConfig",
+    "compute_enriched_artifact_fingerprint",
+    "compute_finalization_fingerprint",
+    "validate_verification_status",
+    "audit_finalization_identity",
+    "build_final_document",
+    "escape_source_excerpt",
+    "render_audit_markdown",
+    "finalize_knowledge_document",
 ]
 
