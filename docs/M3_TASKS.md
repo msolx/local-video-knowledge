@@ -1,6 +1,6 @@
 # Milestone M3: Media Knowledge Integration · Task Board
 
-> **Milestone Status**: `STARTED`  
+> **Milestone Status**: `COMPLETE`  
 > **Target Goal**: `Formal Local Asset (M2 Output) -> Media Processing -> Grounded Evidence (M3 Output)`  
 > **Handoff Contract**: Cross-Agent / Cross-Harness Compatible (Gemini, OpenCode, GLM, Codex)
 
@@ -13,8 +13,9 @@
 | **M3-01** | **CanonicalMediaAssetAdapter** | Current Agent | **`DONE`** | M2 D07 Manifest Contract | `src/media_adapter/`, Unit Tests, Integration Smoke |
 | **M3-02** | **Video / ASR Integration** | Current Agent | **`DONE`** | M3-01 | Adapter -> `pipeline.py` Audio/ASR flow without muxing |
 | **M3-03** | **Image Album OCR/VLM Integration** | Current Agent | **`DONE`** | M3-01 | Multi-image visual inspection pipeline |
+| **M3-04** | **Metadata & Provenance Binding** | Current Agent | **`DONE`** | M3-02, M3-03 | Unified evidence index (`evidence_manifest.json`) |
 | **M3-05** | **Long Media Chunking** | Current Agent | **`DONE`** | M3-02, M3-04 | Deterministic evidence windowing & chunk manifest (`src/chunking/`) |
-| **M3-06** | M3 End-to-End Acceptance | TBD | **`TODO`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
+| **M3-06** | **M3 End-to-End Acceptance** | Current Agent | **`DONE`** | M3-01 ~ M3-05 | Full offline regression & formal asset acceptance |
 
 ---
 
@@ -98,7 +99,22 @@
   - Verified against real C10 video (4 chunks, 184/184 unique speech items) and real C10 album (1 chunk, 3 images / 4 items).
   - 20 targeted unit/integration tests in `tests/test_evidence_chunking.py`.
 
-### M3-06: M3 End-to-End Acceptance (`TODO`)
-- Final closure audit for M3: formal local assets -> evidence generation and chunking.
+### M3-06: M3 End-to-End Acceptance (`DONE`)
+- **Objective**: Full offline end-to-end regression and formal asset acceptance audit across M3-01 to M3-05.
+- **Completed Scope**:
+  - Full end-to-end verification script: `scratch/m3_06_e2e_acceptance_audit.py` auditing C10 Video and Album assets.
+  - Cross-contract identity consistency verified (`platform = "douyin"`, `platform_content_id`, `canonical_id`).
+  - Epistemic invariant verified (`verification_status = "not_checked"` across all summary, item, and chunk records).
+  - Clear timestamp semantics verified (`published_at` vs `first_seen_at`, zero fake `collected_at`).
+  - Complete evidence coverage: 100% of source evidence items referenced in chunks (zero orphan items, zero segment truncation).
+  - Sub-second idempotent resume verified across all stages.
+  - Failure isolation verified for no-audio, missing metadata DB, partial album OCR, and VLM offline states.
+  - Regression baselines:
+    * 77/77 M3 targeted unit/integration tests passed in 3.21s.
+    * 743 passed, 10 skipped in 54.55s on main test suite (666 M2 baseline + 77 M3 tests).
+    * 55 passed, 10 deselected in 5.08s on F2 downloader worker suite.
+  - Formal archive immutability confirmed (0 bytes changed in `archive/`).
+  - M2 code freeze confirmed (`git diff --stat m2-douyin-complete-r1..HEAD src/collector/ src/downloader/` is empty).
+  - Authored comprehensive final milestone report: `docs/M3_FINAL_ACCEPTANCE.md`.
 
 

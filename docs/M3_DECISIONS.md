@@ -213,4 +213,18 @@
   - *Splitting raw segment text across chunk boundaries*: Destroys 1:1 traceability back to exact ASR segments and formal archive timestamps.
   - *Assigning fake timestamps to image albums*: Image albums lack a native time axis; synthesizing fake seconds misrepresents media provenance.
 
+---
+
+## Decision 11: Milestone M3 End-to-End Acceptance & Milestone Closure (M3-06)
+- **Context**: Milestone M3 encompasses tasks M3-01 through M3-06. M3-06 is the final closure and acceptance audit verifying that the full integration chain:
+  `M2 Formal Archive -> CanonicalMediaAssetAdapter -> Media Processing (Video ASR / Album Visual) -> Evidence Manifest -> Deterministic Evidence Chunks`
+  operates deterministically, safely, offline, with 100% formal archive immutability, zero M2 code modification, strict epistemic status (`verification_status: "not_checked"`), clear timestamp semantics (`published_at` vs `first_seen_at`), full evidence traceability, and complete test regression stability.
+- **Decision**:
+  - Accept and close Milestone M3 as fully `COMPLETE`.
+  - Enforce clear boundary for Milestone M4 (Unified Knowledge Model):
+    - M3 strictly ends at deterministic evidence chunking (`evidence_chunks.json`).
+    - M4 starts with semantic knowledge extraction, summarization, entity/claim linking, knowledge graph, and Markdown note publishing.
+    - Zero knowledge extraction or LLM synthesis occurs in M3.
+  - Formally document all acceptance metrics in `docs/M3_FINAL_ACCEPTANCE.md`.
+
 

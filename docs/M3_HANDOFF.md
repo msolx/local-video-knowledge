@@ -2,9 +2,9 @@
 
 > **Authoritative Handoff Document for Milestone M3**  
 > **Repository Root**: `G:\local_pc_project\personal-knowledge-pipeline`  
-> **Milestone Status**: `STARTED / IN_PROGRESS`  
-> **Current Focus**: Task M3-04 Metadata & Provenance Binding (`DONE`)  
-> **Next Focus**: Task M3-05 Long Media Chunking (`TODO`)  
+> **Milestone Status**: `COMPLETE`  
+> **Current Focus**: Milestone M3 End-to-End Acceptance (`DONE`)  
+> **Next Milestone**: Milestone M4: Unified Knowledge Model (`NOT STARTED` - Awaiting User Authorization)  
 > **Handoff Target**: Cross-Agent / Cross-Harness Compatible (Gemini 3.8 Flash, OpenCode + GLM 5.3, Codex)
 
 ---
@@ -14,12 +14,12 @@
 | Property | Value |
 | :--- | :--- |
 | **Milestone** | **Milestone M3: Media Knowledge Integration** |
-| **Status** | **STARTED** (User formally authorized 2026-09-08) |
+| **Status** | **COMPLETE** (User authorized 2026-09-08, Accepted 2026-09-09) |
 | **Git Branch** | `feat/m3-media-knowledge-integration` |
 | **Base Commit** | `ffe8aa1d7e937e91a6270a042e603e0563d402e2` (M2 recovery anchor `m2-douyin-complete-r1`) |
 | **M2 Subsystem State**| **FROZEN / UNMODIFIED** (`src/collector/`, `src/downloader/` untouched) |
-| **Current Task** | **M3-04: Metadata & Provenance Binding** (`DONE`) |
-| **Active Test Baseline** | **723 passed, 10 skipped** (Main `.venv`: 666 M2 baseline + 16 M3-01 + 10 M3-02 + 14 M3-03 + 17 M3-04 tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
+| **Current Task** | **M3-06: M3 End-to-End Acceptance** (`DONE`) |
+| **Active Test Baseline** | **743 passed, 10 skipped** (Main `.venv`: 666 M2 baseline + 16 M3-01 + 10 M3-02 + 14 M3-03 + 17 M3-04 + 20 M3-05 tests; Worker `.venv-f2`: 55 passed, 10 deselected) |
 
 
 
@@ -225,19 +225,45 @@
   16. `test_16_real_c10_video_offline_smoke`: Offline integration smoke test with real C10 video (`7681603850364521734`) verifying full provenance chain: Douyin CID -> Formal Video MP4 -> SHA-256 `3959...` -> exact 184 segments -> ASR model faster-whisper large-v3 -> `evidence_manifest.json`.
   17. `test_17_real_c10_album_offline_smoke`: Offline integration smoke test with real C10 album (`7682038498466993905`) verifying full provenance chain: Douyin CID -> Formal Album WebP images -> SHA-256s -> sequence indices 1..3 -> PaddleOCR text/polygons -> unresolved VLM -> `evidence_manifest.json`.
 
-### 3.5 Regression Baseline Tracking (672/4 -> 682/10 -> 692/10 -> 706/10 -> 723/10)
+### 3.5 Long Media Chunking Test Suite (`tests/test_evidence_chunking.py`)
+- **20/20 tests passing** in 0.38s.
+- Covers:
+  1. `test_01_video_evidence_manifest_to_chunks`: Validates chunking video evidence manifest into deterministic speech chunks.
+  2. `test_02_all_speech_evidence_covered`: Guarantees 100% unique evidence coverage (all speech segments referenced).
+  3. `test_03_deterministic_chunk_ordering`: Verifies chunk ordering is strictly increasing by 1-indexed `chunk_index`.
+  4. `test_04_deterministic_chunk_ids`: Confirms deterministic naming `chk_000001`, `chk_000002`, etc.
+  5. `test_05_temporal_range_correct`: Checks temporal range (`start`, `end`, `duration`) envelopes referenced evidence.
+  6. `test_06_bounded_overlap`: Verifies overlap segments are properly tracked and explicitly listed in `overlap_evidence_ids`.
+  7. `test_07_no_segment_text_splitting`: Ensures segments are referenced as atomic units without text splitting.
+  8. `test_08_config_change_invalidates_cache`: Tests that altering chunk policy thresholds invalidates cached chunks.
+  9. `test_09_evidence_manifest_change_invalidates_cache`: Tests that changing source manifest fingerprint invalidates cache.
+  10. `test_10_second_run_idempotent_cache_hit`: Confirms sub-second cache hit (< 3ms) on repeated execution.
+  11. `test_11_no_audio_video_no_fake_speech_chunk`: Tests that NO_AUDIO video produces 0 speech chunks.
+  12. `test_12_album_evidence_to_chunks`: Tests batching album visual evidence into sequence-bounded chunks.
+  13. `test_13_album_sequence_preserved`: Confirms album image sequences are strictly 1-indexed without time distortion.
+  14. `test_14_same_image_ocr_vlm_grouping`: Groups OCR and VLM evidence for the same image together.
+  15. `test_15_unresolved_vlm_preserved`: Preserves unresolved VLM evidence references within chunks.
+  16. `test_16_partial_evidence_preserved`: Preserves partial/error evidence within chunk references.
+  17. `test_17_large_synthetic_album_batching`: Validates multi-chunk batching across large image albums.
+  18. `test_18_archive_immutability`: Confirms formal archive in `archive/` remains 100% read-only.
+  19. `test_19_real_c10_video_smoke`: Offline integration smoke test on real C10 video (4 chunks, 184/184 unique segments).
+  20. `test_20_real_c10_album_smoke`: Offline integration smoke test on real C10 album (1 chunk, 3 images / 4 items).
+
+### 3.6 Regression Baseline Tracking (672/4 -> 682/10 -> 692/10 -> 706/10 -> 723/10 -> 743/10)
 - **M2 Checkpoint Baseline**: 672 passed, 4 skipped (Total collected: 676)
 - **M3-01 Main Suite**: 682 passed, 10 skipped (Total collected: 692 = 676 M2 tests + 16 M3-01 tests)
 - **M3-02 Main Suite**: 692 passed, 10 skipped (Total collected: 702 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests)
 - **M3-03 Main Suite**: 706 passed, 10 skipped (Total collected: 716 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests)
-- **Current M3-04 Main Suite**: **723 passed, 10 skipped** (Total collected: 733 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests + 17 M3-04 tests)
+- **M3-04 Main Suite**: 723 passed, 10 skipped (Total collected: 733 = 676 M2 tests + 16 M3-01 tests + 10 M3-02 tests + 14 M3-03 tests + 17 M3-04 tests)
+- **Final M3-06 Main Suite**: **743 passed, 10 skipped** (Total collected: 753 = 676 M2 tests + 16 M3-01 + 10 M3-02 + 14 M3-03 + 17 M3-04 + 20 M3-05 tests)
   - Old tests executing: 666 passed, 10 skipped
   - New M3-01 tests: 16 passed
   - New M3-02 tests: 10 passed
   - New M3-03 tests: 14 passed
   - New M3-04 tests: 17 passed
-  - Total: 666 + 16 + 10 + 14 + 17 = 723 passed in 73.05s.
-- **Worker Suite (`.venv-f2`)**: 55 passed, 10 deselected in 5.14s.
+  - New M3-05 tests: 20 passed
+  - Total: 666 + 16 + 10 + 14 + 17 + 20 = 743 passed in 54.55s.
+- **Worker Suite (`.venv-f2`)**: 55 passed, 10 deselected in 5.08s.
 - **The 4 Pre-Existing M2 Skips (Worker Environment Isolation)**:
   1. `tests/test_f2_backend.py:885`: `Requires F2 installed in worker environment (.venv-f2)`
   2. `tests/test_f2_backend.py:988`: `Requires F2 installed in worker environment (.venv-f2)`
@@ -278,88 +304,51 @@
                     NEXT_AGENT_START_HERE (CROSS-AGENT PROTOCOL)
 ================================================================================
 Target Audience: Any LLM / Agent (Gemini 3.8 Flash, OpenCode + GLM 5.3, Codex)
-Current Status : M3-04 DONE, ready for M3-05.
+Current Status : Milestone M3 is COMPLETE.
+Next Milestone : Milestone M4: Unified Knowledge Model (NOT STARTED - Awaiting User Authorization)
 
 1. CURRENT BRANCH:
    feat/m3-media-knowledge-integration
 
 2. CURRENT BASE:
    Base Commit: ffe8aa1d7e937e91a6270a042e603e0563d402e2 (main / m2-douyin-complete-r1)
-   Previous Commit: 3a75d88d4466edd5141e5794de42dfbc24ab23b4 (feat(m3): integrate image albums with OCR and VLM)
-   New Deliverable: src/provenance.py, tests/test_evidence_provenance.py
+   Milestone M3 Deliverables:
+     - src/media_adapter/ (CanonicalMediaAssetAdapter, CanonicalMediaAsset, models.py)
+     - src/visual/album.py (Image Album OCR/VLM processing, sequence preservation)
+     - src/provenance.py (EvidenceItem, Evidence Manifest, 1:1 artifact binding)
+     - src/chunking/ (EvidenceChunk, ChunkingPolicy, deterministic windowing)
+     - data/processed/<canonical_id>/evidence_manifest.json (schema: media-evidence-manifest-v1)
+     - data/processed/<canonical_id>/evidence_chunks.json (schema: evidence-chunks-v1)
+     - docs/M3_FINAL_ACCEPTANCE.md (authoritative signoff document)
 
-3. COMPONENTS:
-   - src/media_adapter/ (CanonicalMediaAsset, AlbumImageArtifact, CanonicalMediaAssetAdapter)
-   - src/visual/album.py (build_album_visual_evidence, album_visual_pipeline_fingerprint, render_album_visual_markdown)
-   - src/visual/service.py (PaddleOCRBackend.read_detail with polygons/boxes)
-   - scripts/ocr_gpu_worker.py (isolated GPU worker with per-image failure isolation)
-   - src/provenance.py (EvidenceItem, build_evidence_manifest, write_evidence_manifest, verify_evidence_manifest)
-   - src/pipeline.py (process_canonical_album, process_canonical_asset, stop_after cutoff, bind_evidence)
-   - tests/test_media_adapter.py (16 tests)
-   - tests/test_video_asr_pipeline.py (10 tests)
-   - tests/test_album_visual_pipeline.py (14 tests)
-   - tests/test_evidence_provenance.py (17 tests)
-   - src/chunking/ (models.py, policy.py, service.py)
-   - tests/test_evidence_chunking.py (20 tests)
-   - docs/M3_HANDOFF.md, docs/M3_DECISIONS.md, docs/M3_TASKS.md
+3. REGRESSION STATUS:
+   - 77/77 M3 targeted unit/integration tests passing in 3.21s
+   - 743 passed, 10 skipped in 54.55s on main test suite (666 M2 baseline + 77 M3 tests)
+   - 55 passed, 10 deselected in 5.08s on F2 worker test suite (.venv-f2)
+   - 0 failures, 0 regressions, 0 archive mutations, 0 M2 code changes
 
-4. CURRENT TASK:
-   M3-05: Long Media Chunking -> DONE.
-   Next Task: M3-06 M3 End-to-End Acceptance.
----
+4. MILESTONE M3 STATUS SUMMARY:
+   - M3-01: CanonicalMediaAssetAdapter -> DONE
+   - M3-02: Video / ASR Integration -> DONE
+   - M3-03: Image Album OCR/VLM Integration -> DONE
+   - M3-04: Metadata & Provenance Binding -> DONE
+   - M3-05: Long Media Chunking -> DONE
+   - M3-06: M3 End-to-End Acceptance -> DONE
+   - MILESTONE M3 -> COMPLETE
 
-## 5. COMPLETED WORK (M3-01 ~ M3-05):
-   - M3-01: CanonicalMediaAssetAdapter (manifest ingestion, formal validation, decoupled metadata DB).
-   - M3-02: Video / ASR Integration (direct streaming, PRIMARY_VIDEO 16kHz mono WAV, NO_AUDIO contract, resume).
-   - M3-03: Image Album OCR / VLM Integration (sequential OCR lines with polygons/boxes, failure isolation, resume).
-   - M3-04: Metadata & Provenance Binding:
-     * Unified evidence index: data/processed/<canonical_id>/evidence_manifest.json.
-     * Epistemic contract: verification_status = "not_checked" across all evidence items.
-     * Clean timestamp semantics: published_at (creator time) vs first_seen_at (collector observation time).
-     * Strictly NO fake collected_at.
-     * Exact 1:1 artifact binding for PRIMARY_VIDEO, ALBUM_IMAGE (and optional AUDIO_TRACK when present in formal manifest).
-     * Resilient fallback when metadata.db is absent (enrichment_status: "unenriched").
-     * Sub-second resume (< 2ms) on identical fingerprint.
-     * Real C10 video (7681603850364521734: 184 segments, 173,847,684 bytes) and album (7682038498466993905: 4 items, 0 audio tracks) verified.
-     * 17/17 tests in tests/test_evidence_provenance.py passed.
-   - M3-05: Long Media Chunking:
-     * Dedicated chunking subsystem: src/chunking/ (models.py, policy.py, service.py).
-     * Output manifest: data/processed/<canonical_id>/evidence_chunks.json (schema: evidence-chunks-v1).
-     * Strict boundary: Evidence -> Evidence Chunks (100% offline, zero LLM, zero summarization).
-     * Full coverage invariant: 100% unique source evidence items referenced (no segment cutting or text truncation).
-     * Bounded overlap: explicitly cataloged in overlap_evidence_ids (first N segments of chunk K+1 overlap with last N of chunk K).
-     * Temporal provenance: strictly envelopes contained speech segments without fake timestamps.
-     * Album sequence: 1-indexed sequential image grouping preserving same-image OCR and VLM evidence together (temporal_range: null).
-     * Epistemic preservation: verification_status = "not_checked" strictly maintained across summary and all chunks.
-     * Sub-second cache hit (< 3ms) via deterministic chunks_fingerprint; automatic invalidation on manifest or policy change.
-     * Real C10 video: 4 chunks, 184/184 unique speech items covered.
-     * Real C10 album: 1 chunk, 3 images / 4 items covered.
-     * 20/20 unit tests in tests/test_evidence_chunking.py passed.
-     * 77/77 M3 unit/integration tests passed.
+5. MILESTONE M4 BOUNDARY & PREREQUISITES:
+   - Milestone M4 encompasses the Unified Knowledge Model:
+     * Semantic summarization of Evidence Chunks via LLM
+     * Knowledge extraction (claims, opinions, entities) bound to EvidenceItem IDs
+     * Multi-modal knowledge graph and Markdown note generation
+   - DO NOT start M4 until the user explicitly issues authorization and instructions for M4.
+   - When M4 begins, read:
+     * docs/M3_FINAL_ACCEPTANCE.md
+     * docs/M3_HANDOFF.md
+     * docs/M3_DECISIONS.md
+     * data/processed/<canonical_id>/evidence_chunks.json
 
-## 6. TARGET FOR M3-06 (M3 End-to-End Acceptance):
-   - Comprehensive closure audit for Milestone M3 across M3-01 to M3-05.
-   - Formal local assets -> ASR/OCR visual processing -> Grounded evidence manifest -> Deterministic evidence chunks.
-   - End-to-end offline pipeline verification and regression check across video and album.
-
-## 7. EXACT NEXT COMMANDS TO RUN:
-   # Step A: Run all 5 M3 unit suites (77 tests)
-   .\.venv\Scripts\python.exe -m pytest tests/test_media_adapter.py tests/test_video_asr_pipeline.py tests/test_album_visual_pipeline.py tests/test_evidence_provenance.py tests/test_evidence_chunking.py -v
-
-   # Step B: Run full test regression (743 passed, 10 skipped)
-   .\.venv\Scripts\python.exe -m pytest tests -q
-
-   # Step C: Run worker regression (.venv-f2, 55 passed)
-   .\.venv-f2\Scripts\python.exe -m pytest tests/test_downloader_worker.py -k "not live" -q
-
-## 8. KEY FILES TO READ:
-   - docs/M3_HANDOFF.md (this document)
-   - docs/M3_DECISIONS.md (architectural boundaries, Decisions 1-10)
-   - docs/M3_TASKS.md (task progression board)
-   - src/chunking/ (EvidenceChunk, ChunkingPolicy, window_video_speech_evidence, chunk_evidence_manifest)
-   - tests/test_evidence_chunking.py (20 test cases)
-
-## 9. CORE INVARIANTS (DO NOT BREAK):
+6. CORE INVARIANTS (DO NOT BREAK):
    - DO NOT modify src/collector/ or src/downloader/ (M2 is frozen).
    - DO NOT make network calls or live Douyin requests.
    - DO NOT touch, mutate, or delete M2 runtime data (data/metadata.db, archive/douyin/).
@@ -367,5 +356,6 @@ Current Status : M3-04 DONE, ready for M3-05.
    - Evidence is model observation, NOT truth (verification_status: "not_checked").
 ================================================================================
 ```
+
 
 
