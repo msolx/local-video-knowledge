@@ -1,10 +1,10 @@
 # Milestone M4: Unified Knowledge Model · Canonical Architecture & Contract Specification
 
-> **Milestone Status**: `STARTED` (Design Phase M4-00)  
+> **Milestone Status**: `STARTED` (Design Phase M4-00 `DONE`)  
 > **Repository Root**: `G:\local_pc_project\personal-knowledge-pipeline`  
 > **Git Branch**: `feat/m4-unified-knowledge-model`  
 > **Base Anchor**: `1f1c3b9a604d2fbdb9bb63606d6392aa893c080e` (`m3-media-integration-complete`)  
-> **Authoritative Design Document for Milestone M4**  
+> **Authoritative Design Document for Milestone M4 (Reconciled Contract v1.1)**  
 > **Handoff Contract**: Cross-Agent / Cross-Harness Compatible (Gemini 3.8 Flash, OpenCode + GLM 5.3, Codex)
 
 ---
@@ -48,11 +48,12 @@ The central responsibility of Milestone M4 is transforming grounded, sequential 
 [M4 Knowledge Extraction Subsystem]
   - Chunk-Level Extraction (LLM with Strict Grounding Prompt)
   - Overlap-Aware Deduplication & Merging
-  - Entity Mention & Classification Attachment
+  - Entity Mention & Topic Tag Attachment
              │
              ▼
 [Canonical Knowledge Units Artifact]
   - data/processed/<canonical_id>/knowledge/knowledge_units.json (Schema: knowledge-units-v1)
+  - data/processed/<canonical_id>/knowledge/knowledge.md         (Internal Audit Representation)
 ```
 
 ### Out-of-Scope Responsibilities (Deferred to Subsequent Milestones)
@@ -64,9 +65,9 @@ The central responsibility of Milestone M4 is transforming grounded, sequential 
 
 ---
 
-## 3. Canonical KnowledgeUnit Schema Proposal
+## 3. Canonical KnowledgeUnit Schema Specification
 
-The canonical schema represents a single, self-contained unit of extracted knowledge. It avoids the anti-pattern of an unbounded dictionary with dozens of nullable fields by organizing data into five cohesive sub-structures: **Identity & Type**, **Content Statements**, **Evidence Provenance**, **Attribution & Epistemics**, and **Graph/Classification Extensions**.
+The canonical schema represents a single, self-contained unit of extracted knowledge. It enforces **strict decoupling between knowledge semantics and speaker attribution**, binds excerpts directly to each evidence reference, and eliminates unneeded relationship fields from v1.
 
 ```json
 {
@@ -78,17 +79,16 @@ The canonical schema represents a single, self-contained unit of extracted knowl
     "canonical_id",
     "unit_type",
     "statement",
-    "source_excerpts",
     "evidence_refs",
     "attribution",
-    "confidence",
+    "extraction_confidence",
     "verification_status",
     "extraction_provenance"
   ],
   "properties": {
     "knowledge_unit_id": {
       "type": "string",
-      "description": "Deterministic identifier: ku_<sha256(canonical_id + unit_type + sorted_evidence_ids + normalized_statement)[:16]>"
+      "description": "Deterministic identifier: ku_<sha256(schema_version + '|' + canonical_id + '|' + unit_type + '|' + canonical_ordered_eids + '|' + normalized_statement)[:16]>"
     },
     "canonical_id": {
       "type": "string",
@@ -96,69 +96,76 @@ The canonical schema represents a single, self-contained unit of extracted knowl
     },
     "unit_type": {
       "type": "string",
-      "enum": ["author_claim", "author_opinion", "observation", "procedure_step", "verification_question"],
-      "description": "Strict semantic taxonomy of the knowledge unit"
+      "enum": ["claim", "opinion", "observation", "procedure_step", "verification_question"],
+      "description": "Semantic nature of the statement (decoupled from speaker/author attribution)"
     },
     "statement": {
       "type": "string",
-      "description": "Normalized, concise declarative statement of the knowledge unit in plain Chinese"
-    },
-    "source_excerpts": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "Exact verbatim text segments extracted from the cited evidence items"
+      "description": "Normalized, concise declarative statement in plain Chinese"
     },
     "evidence_refs": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["evidence_id", "modality"],
+        "required": ["evidence_id", "modality", "source_excerpt"],
         "properties": {
           "evidence_id": { "type": "string" },
           "modality": { "type": "string", "enum": ["speech", "visual_text", "visual_description"] },
-          "chunk_id": { "type": "string" },
+          "chunk_id": { "type": ["string", "null"] },
+          "source_excerpt": {
+            "type": "string",
+            "description": "Exact verbatim text excerpt copied directly from this cited evidence item"
+          },
           "temporal": {
-            "type": "object",
+            "type": ["object", "null"],
             "properties": {
               "start": { "type": "number" },
               "end": { "type": "number" }
             }
           },
           "sequence": {
-            "type": "object",
+            "type": ["object", "null"],
             "properties": {
               "sequence_index": { "type": "integer" }
             }
           }
         }
       },
-      "description": "Direct, 1:N references to atomic evidence items supporting this knowledge unit"
+      "description": "Ordered references to atomic evidence items, with verbatim source excerpt bound per reference"
     },
     "attribution": {
       "type": "object",
-      "required": ["author_name", "attribution_status"],
+      "required": ["attribution_status"],
       "properties": {
-        "author_name": { "type": "string" },
-        "author_id": { "type": ["string", "null"] },
+        "channel_creator": { "type": ["string", "null"] },
+        "channel_creator_id": { "type": ["string", "null"] },
+        "speaker_name": { "type": ["string", "null"] },
         "attribution_status": {
           "type": "string",
-          "enum": ["inferred_creator_speaking", "quoted_third_party", "unverified_speaker", "attributed_visual_text"]
+          "enum": [
+            "source_author_explicit",
+            "named_speaker",
+            "quoted_third_party",
+            "unverified_speaker",
+            "visual_media",
+            "system_derived"
+          ]
         }
       },
-      "description": "Source attribution accounting for absence of speaker diarization"
+      "description": "Source and speaker attribution decoupled from unit type, accounting for lack of diarization"
     },
-    "confidence": {
+    "extraction_confidence": {
       "type": "number",
       "minimum": 0.0,
       "maximum": 1.0,
-      "description": "Model extraction confidence (syntactic/semantic extraction quality, NOT truth probability)"
+      "description": "Extractor certainty in parsing, formulation, and schema adherence (NEVER truth probability)"
     },
     "verification_status": {
       "type": "string",
       "enum": ["not_checked", "verified", "contested", "unsupported"],
       "default": "not_checked",
-      "description": "Epistemic state indicating whether statement veracity has been independently checked"
+      "description": "Epistemic verification state against real-world truth (default: not_checked)"
     },
     "entities": {
       "type": "array",
@@ -171,37 +178,38 @@ The canonical schema represents a single, self-contained unit of extracted knowl
           "uri": { "type": ["string", "null"] }
         }
       },
-      "description": "Named entities mentioned in the statement (structured extension point)"
+      "description": "Named entity mentions attached to the unit (v1 extension point)"
     },
     "topics": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Topical tags or classification labels"
-    },
-    "relationships": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["target_ku_id", "relation_type"],
-        "properties": {
-          "target_ku_id": { "type": "string" },
-          "relation_type": { "type": "string", "enum": ["supports", "contradicts", "extends", "questions"] }
-        }
-      },
-      "description": "Inter-unit knowledge graph links"
+      "description": "Topical tags or classification labels (v1 extension point)"
     },
     "extraction_provenance": {
       "type": "object",
-      "required": ["backend", "model", "prompt_version", "generated_at", "source_manifest_fingerprint"],
+      "required": [
+        "backend",
+        "model",
+        "prompt_version",
+        "knowledge_schema_version",
+        "temperature",
+        "generated_at",
+        "evidence_manifest_fingerprint",
+        "evidence_chunks_fingerprint",
+        "input_chunk_ids"
+      ],
       "properties": {
         "backend": { "type": "string" },
         "model": { "type": "string" },
         "prompt_version": { "type": "string" },
+        "knowledge_schema_version": { "type": "string" },
         "temperature": { "type": "number" },
         "generated_at": { "type": "string" },
-        "source_manifest_fingerprint": { "type": "string" }
+        "evidence_manifest_fingerprint": { "type": "string" },
+        "evidence_chunks_fingerprint": { "type": "string" },
+        "input_chunk_ids": { "type": "array", "items": { "type": "string" } }
       },
-      "description": "Full audit trail of the extraction process"
+      "description": "Complete operational audit trail of the extraction run"
     }
   }
 }
@@ -209,211 +217,234 @@ The canonical schema represents a single, self-contained unit of extracted knowl
 
 ---
 
-## 4. Knowledge Unit Types & Semantics
+## 4. Semantic Taxonomy & Decoupled Attribution
 
-To avoid taxonomy bloat while capturing critical epistemological differences, M4 adopts a compact set of **5 core unit types**:
+### 4.1 Knowledge Semantics (What the Statement Is)
+M4 defines a compact set of **5 canonical unit types**:
+1. **`claim`**: A declarative assertion about the objective external world that has truth conditions and can in principle be verified or refuted (e.g. *"Strix Halo Vulkan backend uses generic operators"*).
+2. **`opinion`**: A subjective judgment, preference, attitude, qualitative appraisal, advice, or speculative prediction (e.g. *"Thinking mode should always be inspected before comparing benchmark speeds"*).
+3. **`observation`**: A direct, sensory fact observed in the media evidence without argumentative interpretation (e.g. OCR text detected on an image, visible logo, or media structure fact).
+4. **`procedure_step`**: Sequential operational instructions or executable commands.
+5. **`verification_question`**: A **system-derived** inquiry highlighting an uncertainty, controversial claim, or unverified metric that warrants downstream fact-checking.
 
-| Unit Type | Semantic Definition | Key Distinguishing Criteria | Verification Eligibility |
-| :--- | :--- | :--- | :---: |
-| **`author_claim`** | The author/speaker asserts a statement about the objective external world that possesses a truth value (true or false) in principle. | Empirical claims, benchmark results, performance measurements, causal assertions, architectural mechanisms. | **Yes** (Primary candidate for fact-checking) |
-| **`author_opinion`** | The author/speaker expresses subjective evaluation, personal preferences, qualitative judgment, or speculative advice. | Value judgments, purchase recommendations, sentiment, personal satisfaction, aesthetic assessments. | **No** (Subjective, non-falsifiable) |
-| **`observation`** | Direct, sensory recording of visible text, objects, or environmental conditions without analytical assertion. | OCR text on video frames / image slides, visible logos, layout structures, hardware labeling. | **Yes** (Verifiable against artifact images) |
-| **`procedure_step`** | Concrete operational instruction, CLI command, configuration parameter, or sequential procedural step. | Tutorial actions, software deployment commands, recipe instructions, reproducible steps. | **Yes** (Verifiable through execution) |
-| **`verification_question`** | An unresolved question, discrepancy, or critical inquiry triggered by the evidence that warrants verification. | Speaker-admitted uncertainties, suspicious metrics, controversial claims requiring independent audit. | **Yes** (Formulates fact-check query) |
+### 4.2 Speaker & Author Attribution (Who Said / Created It)
+Knowledge type and speaker attribution are completely orthogonal dimensions:
+- **`source_author_explicit`**: Speaker is explicitly proven / confirmed to be the channel creator (e.g. verified talking-head video with creator self-introduction).
+- **`named_speaker`**: A specific named third party speaking in the content (e.g. a guest speaker introduced by name).
+- **`quoted_third_party`**: The statement is a quotation attributed by the speaker to an external entity (e.g. *"AMD stated in their whitepaper that..."*).
+- **`unverified_speaker`**: Default for speech ASR when speaker diarization is absent. We know the channel creator, but cannot guarantee the speaker is the creator.
+- **`visual_media`**: Applicable to OCR text or visual graphics where no spoken voice is involved.
+- **`system_derived`**: Applicable to `verification_question`, explicitly stating the question is synthesized by the pipeline, NOT asserted by the speaker.
 
-### 4.1 Claim vs Opinion Invariant
-- **Strict Distinction**: A statement is an `author_claim` **only if** it makes an assertion of empirical fact that could theoretically be proven false by counter-evidence (e.g., *"Vulkan backend does not use RDNA 3.5 cooperative matrix"*).
-- **Tone Defense**: Even if an opinion is stated with high confidence or aggressive authority (e.g., *"This is definitely the worst GPU ever designed"*), it remains an **`author_opinion`**, because it represents a qualitative appraisal, not an empirical truth statement.
+### 4.3 Claim vs Opinion Invariant
+- **Falsifiability Criterion**: A unit is a `claim` **if and only if** it asserts an empirical proposition that can be proven true or false by objective counter-evidence.
+- **Tone Defense**: Even if an opinion is expressed with emphatic conviction (e.g. *"This is unquestionably the greatest GPU in history"*), it remains an **`opinion`** because it reflects a subjective value assessment.
 
 ---
 
-## 5. Evidence Reference Contract & Provenance Chain
+## 5. Evidence Reference Contract & Per-Reference Excerpts
 
-Every `KnowledgeUnit` must be anchored to concrete evidence. **Unanchored knowledge units are strictly prohibited.**
+### 5.1 Elimination of Parallel Arrays
+In legacy designs, `source_excerpts[]` and `evidence_refs[]` were parallel arrays, relying on fragile index synchronization.
+M4 enforces **atomic encapsulation**: every `EvidenceRef` embeds its exact `source_excerpt`:
 
-```text
-KnowledgeUnit (ku_...)
-      │  references (1:N)
-      ▼
-EvidenceItem (ev_seg_... / ve_img_...)
-      │  bound to (1:1)
-      ▼
-Formal Artifact (7681603850364521734.mp4 / 7682038498466993905_img_001.webp)
-      │  stored in
-      ▼
-Formal Archive (archive/douyin/<cid>/)
+```json
+"evidence_refs": [
+  {
+    "evidence_id": "ev_seg_000046",
+    "modality": "speech",
+    "chunk_id": "chk_000001",
+    "source_excerpt": "Vulkan后端在StructHalo上量化矩阵走的是通用算子",
+    "temporal": { "start": 109.42, "end": 112.42 }
+  },
+  {
+    "evidence_id": "ev_seg_000047",
+    "modality": "speech",
+    "chunk_id": "chk_000001",
+    "source_excerpt": "没有吃到RDNA的3.5协作矩阵的红利",
+    "temporal": { "start": 112.42, "end": 115.12 }
+  }
+]
 ```
 
-### 5.1 Evidence Reference Properties
-1. **Direct Granularity**: Cites exact atomic `evidence_id`s (e.g. `["ev_seg_000046", "ev_seg_000047", "ev_seg_000048"]`). It is forbidden to cite only the coarse `canonical_id`.
-2. **Stable Sorting**: `evidence_refs` are sorted strictly by chronological temporal start (for speech) or sequence index (for image albums).
-3. **Multi-Segment Support**: A knowledge unit may synthesize a claim spanning contiguous ASR segments or multiple related album images, preserving all cited IDs in sequence.
-4. **Verbatim Dual Representation**:
-   - `statement`: Normalized, grammatically clean declarative sentence produced by the model.
-   - `source_excerpts`: Array of raw verbatim excerpts copied directly from the cited evidence items, allowing users to immediately audit model hallucination or distortion.
+### 5.2 Canonical Evidence Ordering Invariant
+- **Semantic Sequence**: Speech segments and album image sequences possess inherent temporal and sequential meaning.
+- **No Arbitrary Lexical Sorting**: The order of `evidence_refs` **must strictly follow the canonical order** of `evidence_manifest.json` and `evidence_chunks.json`. Sorting evidence IDs alphabetically is strictly forbidden.
 
 ---
 
-## 6. Chunk Processing vs Provenance Invariant
+## 6. Deterministic Identity Strategy (`knowledge_unit_id`)
 
-A fundamental architectural principle of Milestone M4:
-> **Evidence Chunk is a processing window, NOT a provenance entity.**
+Knowledge units must not receive random UUIDs. Identifiers must be stable across repeated runs.
 
-### 6.1 Rationale
-- Chunks (`EvidenceChunk`) exist solely to divide continuous media streams into LLM-manageable token context windows (`max_tokens: 1000`, `max_duration: 120s`).
-- Chunks have intentional overlaps (`overlap_segments: 2`) to ensure context continuity at boundaries.
-- If a KnowledgeUnit only referenced `chunk_id`, moving or re-parameterizing chunks would invalidate knowledge provenance.
-- Therefore, the **canonical provenance unit is strictly `EvidenceItem`**. The `chunk_id` in `evidence_refs` is recorded solely as execution telemetry, not as primary identity.
-
----
-
-## 7. Cross-Chunk Deduplication Strategy
-
-Because chunks overlap at boundaries, extractors running independently on Chunk $K$ and Chunk $K+1$ will frequently observe the same boundary evidence segments (e.g. segments 47 and 48) and may generate identical or near-identical knowledge units.
-
-M4 establishes a three-tier deduplication protocol:
-
-```text
-Extraction from Chunk K ──► Candidate KU A
-                                  │
-                                  ├──► 1. Exact Evidence Set Match ──► Merge/Discard Duplicate
-                                  │
-Extraction from Chunk K+1 ─► Candidate KU B
-                                  ├──► 2. Overlapping Evidence + High Similarity ──► Statement Unification
-                                  │
-                                  └──► 3. Disjoint Evidence ──► Distinct Knowledge Units
-```
-
-### 7.1 Deduplication Rules
-1. **Exact Evidence Set Duplication**: If Candidate A and Candidate B cite the exact same set of `evidence_ids` and possess the same `unit_type`:
-   - Keep the unit with higher model extraction confidence or more complete normalized statement.
-   - Discard the redundant copy.
-2. **Superset Overlap Resolution**: If Candidate B cites `[ev_46, ev_47, ev_48]` while Candidate A (from previous chunk) only cited `[ev_47, ev_48]`, and their normalized statements align semantically:
-   - Candidate B is recognized as the broader realization; Candidate A is subsumed into Candidate B.
-3. **Normalized Semantic Key Collapsing**: Units sharing identical canonical ID, unit type, and core entity/predicate components are merged, combining their `evidence_refs` into a unified list without duplicate IDs.
-
----
-
-## 8. Deterministic Identity Strategy (`knowledge_unit_id`)
-
-Knowledge units must not receive random UUIDs. Random identifiers prevent idempotent re-runs and complicate cache validation.
-
-### 8.1 Hash Formulation
+### 6.1 Payload Formulation
 ```python
 def compute_knowledge_unit_id(
+    schema_version: str,
     canonical_id: str,
     unit_type: str,
-    evidence_ids: list[str],
-    statement: str,
+    canonical_ordered_evidence_ids: list[str],
+    normalized_statement: str,
 ) -> str:
-    sorted_eids = sorted(evidence_ids)
-    normalized_stmt = statement.strip().lower()
-    payload = f"{canonical_id}|{unit_type}|{','.join(sorted_eids)}|{normalized_stmt}"
+    # Preserve canonical order; do NOT sort lexically
+    eids_str = ",".join(canonical_ordered_evidence_ids)
+    cleaned_stmt = normalized_statement.strip().lower()
+    payload = f"{schema_version}|{canonical_id}|{unit_type}|{eids_str}|{cleaned_stmt}"
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"ku_{digest}"
 ```
-- **Invariance**: Re-running the pipeline with identical inputs and identical model outputs yields bit-for-bit identical `knowledge_unit_id`s.
+- **Stability**: Identical inputs and identical model outputs yield bit-for-bit identical `knowledge_unit_id`s.
+- **Variation Handling**: If the normalized statement changes slightly across models, distinct candidate IDs are generated, which M4-03 merger will reconcile.
 
 ---
 
-## 9. Epistemic Semantics: "Extraction Confidence is NOT Truth"
+## 7. Epistemic Semantics & Extraction Confidence
 
-M4 strictly preserves the epistemic integrity established in M3:
-
-1. **Default State**:
-   ```json
-   "verification_status": "not_checked"
-   ```
-   Every newly extracted `KnowledgeUnit` is initialized to `"not_checked"`.
-2. **Confidence vs Truth**:
-   - `confidence`: Measures extraction quality (e.g. how clearly the statement reflects the source evidence and adheres to extraction schemas).
-   - High confidence (e.g. `0.98`) means *"The model is very certain the author claimed this"*, **NEVER** *"This claim is 98% factually true"*.
-3. **Verification States (Reserved Contract for Future Fact-Checking)**:
-   - `"not_checked"`: Statement extracted as asserted by author; veracity unexamined.
-   - `"verified"`: Cross-verified against authoritative external ground truth.
-   - `"contested"`: Disputed or refuted by conflicting authoritative evidence.
-   - `"unsupported"`: Checked and found to lack objective empirical basis.
+M4 strictly preserves epistemic clarity:
+1. **`extraction_confidence`**:
+   - Quantifies model certainty that the statement is accurately extracted and categorized from the text.
+   - **Does NOT represent real-world truth probability.**
+2. **`verification_status`**:
+   - Strictly defaults to `"not_checked"` for all newly extracted units.
+   - Decoupled from extraction: only an external fact-checking process (out of scope for M4) can alter this status.
+3. **`verification_question` Semantics**:
+   - Not an author-asserted fact; represents an audit question generated by the system.
+   - Enforces `attribution.attribution_status = "system_derived"` and `verification_status = "not_checked"`.
 
 ---
 
-## 10. Author Attribution Semantics & Diarization Defense
-
-In informal short-form video and social media content, the channel owner (`author_name`) is not necessarily the sole speaker in the video (e.g. interviews, street vlogs, movie dubs, guest appearances).
-
-### 10.1 Attribution Taxonomy
-To prevent attributing guest statements to the channel creator, M4 enforces explicit attribution labeling:
-- **`inferred_creator_speaking`**: Default when the video is a solo presentation / talking-head monologue by the creator.
-- **`quoted_third_party`**: The statement is explicitly quoted by the author from another entity (e.g., *"AMD officially claimed that..."*).
-- **`unverified_speaker`**: Used when multiple speakers or background dialogue exist and speech diarization is unavailable.
-- **`attributed_visual_text`**: For OCR-derived statements (e.g. brand labels on equipment).
-
-The schema requires recording both `author_name` (from channel metadata) and `attribution_status`.
+## 8. Observation Semantics (Tightened Scope)
+- **`observation`** is strictly reserved for direct media-level observations (e.g. OCR text strings, visual layout elements, slide boundaries).
+- Spoken statements within speech transcripts must be classified as `claim` or `opinion`. They must **not** be labeled as `observation` to bypass the epistemic verification contract.
 
 ---
 
-## 11. Extraction Provenance Contract
-
-Every extracted knowledge document and individual unit records complete operational provenance:
-- `backend`: Inference runtime (e.g. `"lm_studio"`, `"ollama"`, `"openai_compatible"`).
-- `model`: Exact model identifier (e.g. `"qwen2.5-7b-instruct"`, `"qwen3.8-27b"`).
-- `prompt_version`: Prompt contract identifier (e.g. `"knowledge-extraction-v4.0"`).
-- `temperature`: Sampling temperature used.
-- `generated_at`: ISO-8601 UTC timestamp of execution.
-- `source_manifest_fingerprint`: SHA-256 fingerprint of the input `evidence_manifest.json`.
+## 9. Entity, Topic, and Relationship Boundaries
+- **`entities`**: Retained as a structured v1 extension point (`list[EntityMention]`).
+- **`topics`**: Retained as a structured v1 extension point (`list[str]`).
+- **`relationships`**: **REMOVED from KnowledgeUnit v1**. Because M4 does not implement an inter-unit graph consumer, removing `relationships` avoids an undefined, unvalidated field. Inter-unit graph models belong to a future Knowledge Graph milestone.
 
 ---
 
-## 12. Historical Knowledge Code Reconciliation Matrix
+## 10. Chunk Processing vs Provenance Invariant
 
-An audit of existing legacy code in `src/knowledge/`, `src/backends/llm.py`, and `src/render.py` reveals the following status:
+> **An Evidence Chunk is a processing window, NOT a provenance entity.**
 
-| File / Component | Legacy State | M4 Status | Rationale & Action Plan |
+- Chunks exist solely to accommodate LLM token limits (`max_tokens: 1000`, `max_duration: 120s`).
+- Chunks have boundary overlaps (`overlap_segments: 2`).
+- Canonical provenance is anchored **strictly to `EvidenceItem.evidence_id`**. The `chunk_id` in `evidence_refs` is recorded purely as execution telemetry.
+
+---
+
+## 11. Cross-Chunk Deduplication Strategy
+
+Because chunks overlap, extractors running on adjacent chunks will observe identical boundary segments.
+M4 establishes a three-tier deduplication protocol in M4-03:
+1. **Exact Evidence Set Match**: If Candidate A (Chunk $K$) and Candidate B (Chunk $K+1$) cite the exact same canonical `evidence_id`s with matching `unit_type`: retain the version with higher `extraction_confidence` or more complete statement, and discard the duplicate.
+2. **Superset Overlap Absorption**: If Candidate B cites `[ev_46, ev_47, ev_48]` while Candidate A cited only `[ev_47, ev_48]`, and statements align, Candidate A is subsumed into Candidate B.
+3. **Normalized Semantic Key Collapsing**: Units sharing identical canonical ID, unit type, and core entity/predicate components are collapsed into a single unit, merging their `evidence_refs` into a unified canonical sequence.
+
+---
+
+## 12. Extraction Provenance Contract
+
+Every knowledge document records complete audit metadata:
+```json
+"extraction_provenance": {
+  "backend": "lm_studio",
+  "model": "qwen2.5-7b-instruct",
+  "prompt_version": "knowledge-extraction-v4.0",
+  "knowledge_schema_version": "knowledge-units-v1",
+  "temperature": 0.1,
+  "generated_at": "2026-09-09T12:00:00Z",
+  "evidence_manifest_fingerprint": "943bac2c855632f796ac0db6c918ae9531d72722e5b5cd8ca6221f2a16899738",
+  "evidence_chunks_fingerprint": "5b4004cf45f8703bb743caca5c5b77a46d6fb0eee2505fb42e00e7b5d553717a",
+  "input_chunk_ids": ["chk_000001", "chk_000002", "chk_000003", "chk_000004"]
+}
+```
+- Distinguishes manifest fingerprint from chunks fingerprint.
+- Tracks specific `input_chunk_ids`.
+
+---
+
+## 13. Historical Legacy Code Reconciliation Matrix
+
+| Component | Legacy State | M4 Status | Migration & Reconciliation Plan |
 | :--- | :--- | :---: | :--- |
-| **`src/knowledge/chunker.py`** | Transcript-only heuristic token chunker (`chunk_transcript`) | **`DEPRECATE`** | Completely superseded by `src/chunking/` (`ChunkingPolicy`, `EvidenceChunk`, `evidence_chunks.json`). Will be phased out. |
-| **`src/knowledge/lifecycle.py`** | GPU VRAM manager for LM Studio (`lms ps`, `lms load`, `lms unload`) | **`KEEP`** | Highly valuable for local GPU orchestration on RTX 4090. Preserves zero-VRAM-competition with Whisper. |
-| **`src/knowledge/service.py`** | Legacy `build_knowledge()`, manual source schema, local-to-global merge | **`ADAPT`** | Refactor into `src/knowledge/extractor.py`. Replace manual metadata ingestion with M3 `evidence_manifest.json` and legacy chunking with `evidence_chunks.json`. |
-| **`src/backends/llm.py`** | v2.3 prompt with `ALLOWED_TYPES = {"author_claim", "author_opinion", "verification_question"}` | **`ADAPT`** | Update schema and prompt to `knowledge-units-v1`. Retain underlying OpenAI-compatible and Ollama HTTP drivers. |
-| **`src/render.py`** | Markdown renderer (`render_markdown`) producing `knowledge.md` | **`ADAPT`** | Adapt section renderers to consume `CanonicalKnowledgeUnit` structures and link evidence IDs to formal artifacts. |
-| **`src/pipeline.py`** (knowledge stage) | Ingests raw `transcript.json` and `visual_transcript.json` directly | **`ADAPT`** | Wire knowledge stage to consume `CanonicalMediaAsset.evidence_manifest` and `evidence_chunks`. |
+| **`src/knowledge/chunker.py`** | Transcript-only heuristic token chunker (`chunk_transcript`) | **`DEPRECATE`** | Completely superseded by `src/chunking/` (`evidence_chunks.json`). Phase out in M4. |
+| **`src/knowledge/lifecycle.py`** | GPU VRAM manager for LM Studio (`lms ps`, `lms load`, `lms unload`) | **`KEEP`** | Retained for local RTX 4090 GPU orchestration, preventing VRAM competition with Whisper. |
+| **`src/knowledge/service.py`** | Legacy `build_knowledge()`, manual metadata ingestion | **`ADAPT`** | Refactor into `src/knowledge/extractor.py` and `merger.py`, wired to M3 evidence artifacts. |
+| **`src/backends/llm.py`** | Prompt v2.3 with legacy types (`author_claim`, `author_opinion`) | **`ADAPT`** | Upgrade prompt to `knowledge-units-v1` with decoupled types (`claim`, `opinion`). |
+| **`src/render.py`** | Legacy `render_markdown` producing `knowledge.md` | **`ADAPT`** | Refactor to render `knowledge.md` as an internal audit document displaying typed KnowledgeUnits and evidence links. |
+| **Legacy `author_claim`** | Legacy schema field in M1/M2 | **`MIGRATED`** | Maps to: `unit_type = "claim"` + `attribution.speaker_name = author` + `attribution.attribution_status = "source_author_explicit"`. |
+| **Legacy `author_opinion`** | Legacy schema field in M1/M2 | **`MIGRATED`** | Maps to: `unit_type = "opinion"` + `attribution.speaker_name = author` + `attribution.attribution_status = "source_author_explicit"`. |
 
 ---
 
-## 13. Grounded C10 Real Evidence Examples
+## 14. Real C10 Grounded Evidence Examples
 
-Based strictly on physical inspection of real M3 output files:
-- Video: `data/processed/douyin_7681603850364521734/evidence_manifest.json`
-- Album: `data/processed/douyin_7682038498466993905/evidence_manifest.json`
+Grounded strictly in physical disk artifacts:
+- Video Manifest: `data/processed/douyin_7681603850364521734/evidence_manifest.json` (Fingerprint: `943bac2c855632f7...`)
+- Video Chunks: `data/processed/douyin_7681603850364521734/evidence_chunks.json` (Fingerprint: `5b4004cf45f8703b...`)
+- Album Manifest: `data/processed/douyin_7682038498466993905/evidence_manifest.json` (Fingerprint: `734713343813cb6e...`)
+- Album Chunks: `data/processed/douyin_7682038498466993905/evidence_chunks.json` (Fingerprint: `bfb831b18620fb37...`)
 
-### 13.1 Real C10 Video Example 1: `author_claim`
+### 14.1 Real C10 Video Example 1: `claim`
 ```json
 {
   "knowledge_unit_id": "ku_3f91b7e408d2c19a",
   "canonical_id": "douyin_7681603850364521734",
-  "unit_type": "author_claim",
-  "statement": "Vulkan后端引擎在Strix Halo平台运行27B模型时采用通用矩阵算子，未利用RDNA 3.5协作矩阵（Cooperative Matrix）加速，导致显存推理速度受限在十几Token左右。",
-  "source_excerpts": [
-    "用主线Vulkan版本的引擎来跑27B",
-    "看到的十几Token的速度",
-    "别急着骂硬件",
-    "那其实是引擎的电话板",
-    "不是芯片的",
-    "Vulkan后端在StructHalo上量化矩阵走的是通用算子",
-    "没有吃到RDNA的3.5协作矩阵的红利",
-    "所以速度自然起不来"
-  ],
+  "unit_type": "claim",
+  "statement": "Vulkan后端引擎在Strix Halo平台运行27B模型时采用通用矩阵算子，未利用RDNA 3.5协作矩阵加速，导致推理速度受限在十几Token左右。",
   "evidence_refs": [
-    { "evidence_id": "ev_seg_000041", "modality": "speech", "chunk_id": "chk_000001", "temporal": { "start": 101.58, "end": 104.12 } },
-    { "evidence_id": "ev_seg_000042", "modality": "speech", "chunk_id": "chk_000001", "temporal": { "start": 104.12, "end": 105.82 } },
-    { "evidence_id": "ev_seg_000046", "modality": "speech", "chunk_id": "chk_000001", "temporal": { "start": 109.42, "end": 112.42 } },
-    { "evidence_id": "ev_seg_000047", "modality": "speech", "chunk_id": "chk_000001", "temporal": { "start": 112.42, "end": 115.12 } },
-    { "evidence_id": "ev_seg_000048", "modality": "speech", "chunk_id": "chk_000001", "temporal": { "start": 115.60, "end": 117.52 } }
+    {
+      "evidence_id": "ev_seg_000041",
+      "modality": "speech",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "用主线Vulkan版本的引擎来跑27B",
+      "temporal": { "start": 101.58, "end": 104.12 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000042",
+      "modality": "speech",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "看到的十几Token的速度",
+      "temporal": { "start": 104.12, "end": 105.82 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000046",
+      "modality": "speech",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "Vulkan后端在StructHalo上量化矩阵走的是通用算子",
+      "temporal": { "start": 109.42, "end": 112.42 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000047",
+      "modality": "speech",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "没有吃到RDNA的3.5协作矩阵的红利",
+      "temporal": { "start": 112.42, "end": 115.12 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000048",
+      "modality": "speech",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "所以速度自然起不来",
+      "temporal": { "start": 115.60, "end": 117.52 },
+      "sequence": null
+    }
   ],
   "attribution": {
-    "author_name": "老林说",
-    "author_id": "7615965445866783802",
-    "attribution_status": "inferred_creator_speaking"
+    "channel_creator": "老林说",
+    "channel_creator_id": "7615965445866783802",
+    "speaker_name": null,
+    "attribution_status": "unverified_speaker"
   },
-  "confidence": 0.95,
+  "extraction_confidence": 0.95,
   "verification_status": "not_checked",
   "entities": [
     { "name": "Vulkan", "category": "software_engine", "uri": null },
@@ -421,71 +452,108 @@ Based strictly on physical inspection of real M3 output files:
     { "name": "RDNA 3.5", "category": "gpu_architecture", "uri": null }
   ],
   "topics": ["本地部署大模型", "统一内存", "AIMAX395", "strixhalo"],
-  "relationships": [],
   "extraction_provenance": {
     "backend": "mock_extractor",
     "model": "qwen2.5-7b-instruct",
     "prompt_version": "knowledge-extraction-v4.0",
+    "knowledge_schema_version": "knowledge-units-v1",
     "temperature": 0.1,
     "generated_at": "2026-09-09T12:00:00Z",
-    "source_manifest_fingerprint": "1a13943..."
+    "evidence_manifest_fingerprint": "943bac2c855632f796ac0db6c918ae9531d72722e5b5cd8ca6221f2a16899738",
+    "evidence_chunks_fingerprint": "5b4004cf45f8703bb743caca5c5b77a46d6fb0eee2505fb42e00e7b5d553717a",
+    "input_chunk_ids": ["chk_000001"]
   }
 }
 ```
 
-### 13.2 Real C10 Video Example 2: `author_opinion`
+### 14.2 Real C10 Video Example 2: `opinion`
 ```json
 {
   "knowledge_unit_id": "ku_8d40a1b2c9e7f531",
   "canonical_id": "douyin_7681603850364521734",
-  "unit_type": "author_opinion",
+  "unit_type": "opinion",
   "statement": "评估大模型端侧推理性能时不应仅看单一速度数值，应综合考察推理引擎类型、任务场景以及是否开启思考模式（Thinking），这三个变量可导致同模型速度产生数倍差异。",
-  "source_excerpts": [
-    "所以再看到任何的评测",
-    "先问三个问题",
-    "它用的是什么引擎",
-    "用的是什么任务类型",
-    "然后Thinking有没有开",
-    "这三个变量",
-    "能让同一个模型",
-    "的速度差出好几倍"
-  ],
   "evidence_refs": [
-    { "evidence_id": "ev_seg_000154", "modality": "speech", "chunk_id": "chk_000004", "temporal": { "start": 314.64, "end": 317.22 } },
-    { "evidence_id": "ev_seg_000155", "modality": "speech", "chunk_id": "chk_000004", "temporal": { "start": 317.22, "end": 318.40 } },
-    { "evidence_id": "ev_seg_000156", "modality": "speech", "chunk_id": "chk_000004", "temporal": { "start": 318.40, "end": 319.98 } },
-    { "evidence_id": "ev_seg_000157", "modality": "speech", "chunk_id": "chk_000004", "temporal": { "start": 319.98, "end": 321.30 } },
-    { "evidence_id": "ev_seg_000158", "modality": "speech", "chunk_id": "chk_000004", "temporal": { "start": 321.30, "end": 323.10 } },
-    { "evidence_id": "ev_seg_000161", "modality": "speech", "chunk_id": "chk_000004", "temporal": { "start": 324.66, "end": 326.10 } }
+    {
+      "evidence_id": "ev_seg_000154",
+      "modality": "speech",
+      "chunk_id": "chk_000004",
+      "source_excerpt": "所以再看到任何的评测",
+      "temporal": { "start": 314.64, "end": 317.22 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000155",
+      "modality": "speech",
+      "chunk_id": "chk_000004",
+      "source_excerpt": "先问三个问题",
+      "temporal": { "start": 317.22, "end": 318.40 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000156",
+      "modality": "speech",
+      "chunk_id": "chk_000004",
+      "source_excerpt": "它用的是什么引擎",
+      "temporal": { "start": 318.40, "end": 319.98 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000157",
+      "modality": "speech",
+      "chunk_id": "chk_000004",
+      "source_excerpt": "用的是什么任务类型",
+      "temporal": { "start": 319.98, "end": 321.30 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000158",
+      "modality": "speech",
+      "chunk_id": "chk_000004",
+      "source_excerpt": "然后Thinking有没有开",
+      "temporal": { "start": 321.30, "end": 323.10 },
+      "sequence": null
+    },
+    {
+      "evidence_id": "ev_seg_000161",
+      "modality": "speech",
+      "chunk_id": "chk_000004",
+      "source_excerpt": "的速度差出好几倍",
+      "temporal": { "start": 324.66, "end": 326.10 },
+      "sequence": null
+    }
   ],
   "attribution": {
-    "author_name": "老林说",
-    "author_id": "7615965445866783802",
-    "attribution_status": "inferred_creator_speaking"
+    "channel_creator": "老林说",
+    "channel_creator_id": "7615965445866783802",
+    "speaker_name": null,
+    "attribution_status": "unverified_speaker"
   },
-  "confidence": 0.92,
+  "extraction_confidence": 0.92,
   "verification_status": "not_checked",
   "entities": [
     { "name": "Thinking模式", "category": "model_feature", "uri": null }
   ],
   "topics": ["本地部署大模型", "评测标准"],
-  "relationships": [],
   "extraction_provenance": {
     "backend": "mock_extractor",
     "model": "qwen2.5-7b-instruct",
     "prompt_version": "knowledge-extraction-v4.0",
+    "knowledge_schema_version": "knowledge-units-v1",
     "temperature": 0.1,
     "generated_at": "2026-09-09T12:00:00Z",
-    "source_manifest_fingerprint": "1a13943..."
+    "evidence_manifest_fingerprint": "943bac2c855632f796ac0db6c918ae9531d72722e5b5cd8ca6221f2a16899738",
+    "evidence_chunks_fingerprint": "5b4004cf45f8703bb743caca5c5b77a46d6fb0eee2505fb42e00e7b5d553717a",
+    "input_chunk_ids": ["chk_000004"]
   }
 }
 ```
 
-### 13.3 Real C10 Album Example: Visual `observation` & NOT PRESENT Analysis
+### 14.3 Real C10 Album Grounded Analysis (Visual `observation` & NOT PRESENT)
 Physical inspection of C10 Image Album (`douyin_7682038498466993905`):
-- Contains 3 WebP images with esports team jersey graphics and sponsor brand marks (`logitech`, `INAMAX`, `AGON`, `SMILEY`).
-- **`author_claim`**: **NOT PRESENT** in source evidence (no declarative statements made by author).
-- **`author_opinion`**: **NOT PRESENT** in source evidence (no subjective viewpoints expressed).
+- Contains 3 WebP images with esports team graphics and brand labels (`logitech`, `INAMAX`, `AGON`, `SMILEY`).
+- **`claim`**: **NOT PRESENT** in evidence (no declarative statements made in images).
+- **`opinion`**: **NOT PRESENT** in evidence (no subjective viewpoints expressed).
 - Valid visual `observation`:
 ```json
 {
@@ -493,43 +561,54 @@ Physical inspection of C10 Image Album (`douyin_7682038498466993905`):
   "canonical_id": "douyin_7682038498466993905",
   "unit_type": "observation",
   "statement": "图集第1张与第2张图片包含赞助商与品牌标识文字，经OCR识别包含'logitech'、'INAMAX'、'AGON'及'SMILEY'。",
-  "source_excerpts": [
-    "logitech",
-    "INAMAX",
-    "AGON",
-    "SMILEY"
-  ],
   "evidence_refs": [
-    { "evidence_id": "ve_img_001", "modality": "visual_text", "chunk_id": "chk_000001", "sequence": { "sequence_index": 1 } },
-    { "evidence_id": "ve_img_002", "modality": "visual_text", "chunk_id": "chk_000001", "sequence": { "sequence_index": 2 } }
+    {
+      "evidence_id": "ve_img_001",
+      "modality": "visual_text",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "logitech\nINAMAX",
+      "temporal": null,
+      "sequence": { "sequence_index": 1 }
+    },
+    {
+      "evidence_id": "ve_img_002",
+      "modality": "visual_text",
+      "chunk_id": "chk_000001",
+      "source_excerpt": "lognach\nAGON\nSMILEY\n081",
+      "temporal": null,
+      "sequence": { "sequence_index": 2 }
+    }
   ],
   "attribution": {
-    "author_name": "姑妈有神王",
-    "author_id": "1295683635130569",
-    "attribution_status": "attributed_visual_text"
+    "channel_creator": "姑妈有神王",
+    "channel_creator_id": "1295683635130569",
+    "speaker_name": null,
+    "attribution_status": "visual_media"
   },
-  "confidence": 0.98,
+  "extraction_confidence": 0.98,
   "verification_status": "not_checked",
   "entities": [
     { "name": "Logitech", "category": "brand", "uri": null },
     { "name": "AGON", "category": "brand", "uri": null }
   ],
   "topics": ["英雄联盟", "g2"],
-  "relationships": [],
   "extraction_provenance": {
     "backend": "mock_extractor",
     "model": "qwen2.5-7b-instruct",
     "prompt_version": "knowledge-extraction-v4.0",
+    "knowledge_schema_version": "knowledge-units-v1",
     "temperature": 0.1,
     "generated_at": "2026-09-09T12:00:00Z",
-    "source_manifest_fingerprint": "22cd298..."
+    "evidence_manifest_fingerprint": "734713343813cb6ef69db6e3d528c06c3367627e598bb48f480859e222d0be7b",
+    "evidence_chunks_fingerprint": "bfb831b18620fb375f2075d1818e50356328e67bd0cdca4f43cc896ad1d2c71e",
+    "input_chunk_ids": ["chk_000001"]
   }
 }
 ```
 
 ---
 
-## 14. Milestone M4 Task Breakdown
+## 15. Corrected Milestone M4 Task Breakdown
 
 | Task ID | Task Title | Core Objective | Scope Boundary | Target Deliverables |
 | :--- | :--- | :--- | :--- | :--- |
@@ -537,16 +616,15 @@ Physical inspection of C10 Image Album (`douyin_7682038498466993905`):
 | **M4-01** | **Canonical Model & Domain Layer** | Implement `CanonicalKnowledgeUnit` domain dataclasses and serialization | Pydantic/dataclass schema, validation, deterministic ID calculation | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
 | **M4-02** | **Chunk-Level Extraction Pipeline** | Extract structured knowledge units from `evidence_chunks.json` | LLM backend prompts, structured output parser, LM Studio lifecycle integration | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
 | **M4-03** | **Cross-Chunk Deduplication & Merging** | Resolve boundary overlap duplicates and merge continuous units | Exact match dedup, superset resolution, normalized statement merge | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
-| **M4-04** | **Entity & Classification Attachment** | Attach recognized entity mentions and topic tags to units | Structured metadata attachment, vocabulary normalization | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
-| **M4-05** | **Knowledge Document & Markdown Render** | Output `knowledge_units.json` and human-readable `knowledge.md` | JSON serialization, clean markdown generation with evidence links | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
+| **M4-04** | **Entity & Topic Attachment** | Attach recognized entity mentions and topic tags to units | Structured metadata attachment, vocabulary normalization | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
+| **M4-05** | **Verification Contract & Audit Render** | Output `knowledge_units.json` and human-readable audit `knowledge.md` | Verification state contracts, human-readable audit render (NOT Obsidian) | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
 | **M4-06** | **End-to-End Acceptance** | Full offline regression and C10 verification | End-to-end verification, regression baselines, freeze audit | `docs/M4_FINAL_ACCEPTANCE.md` |
 
 ---
 
-## 15. Summary of Explicit Non-Goals in Milestone M4
+## 16. Explicit Non-Goals in Milestone M4
 
-To maintain development velocity and isolation of responsibilities, the following areas are formally designated **NON-GOALS** for Milestone M4:
-1. **No External RAG Engine**: Embedding generation and vector databases (Chroma, Qdrant, LanceDB) will be designed in a future retrieval milestone.
-2. **No Obsidian Vault Synchronization**: Writing directly into user desktop Obsidian vaults is deferred to a dedicated publishing milestone.
+1. **No External RAG Engine**: Embedding generation and vector databases (Chroma, Qdrant, LanceDB) are deferred to a dedicated retrieval milestone.
+2. **No Obsidian Vault Synchronization**: `knowledge.md` is strictly an internal, human-readable audit representation; publishing to Obsidian vaults is deferred.
 3. **No External Fact-Checking**: Network querying to Wikipedia, Google, or Baidu is forbidden. All units remain `verification_status = "not_checked"`.
-4. **No Full Global Entity Knowledge Graph**: Graph database storage (Neo4j) is out of scope; M4 only captures local inter-unit relationships within the same media asset.
+4. **No Full Global Entity Knowledge Graph**: Graph database storage (Neo4j) and inter-unit graph relationships are out of scope.
