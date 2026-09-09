@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Architectural Decision Log
 
-> **Milestone Status**: `IN_PROGRESS` (M4-02 `DONE / SEALED`; M4-03 next)
+> **Milestone Status**: `IN_PROGRESS` (M4-03 `DONE`; M4-04 next)
 > **Status**: APPROVED / ACTIVE  
 > **Context**: Transitioning from Grounded Evidence (M3 Output) to Structured Canonical Knowledge Units (M4 Output).
 
@@ -178,3 +178,14 @@
   - Every candidate from all chunks in one asset extraction shares that asset-level run ID.
   - Identical cached or force-rerun raw outputs retain the same run ID; any changed raw output changes the run ID. `generated_at` is excluded from identity.
   - API keys, secret values, and secret environment-variable names are never persisted.
+
+---
+
+## Decision 17: Conservative Deterministic Cross-Chunk Merge
+- **Context**: M4-02 emits one grounded candidate per chunk. Overlap windows can emit the same frozen Knowledge Unit identity more than once, but similarity-based merging could absorb distinct claims.
+- **Decision**:
+  - M4-03 performs only exact identity deduplication: candidates merge only when `knowledge_unit_id` is identical. Superset absorption, statement merging, embeddings, and LLM judgment are deferred.
+  - A valid exact merge unions `input_chunk_ids` and `source_candidate_ids` in first-candidate appearance order, sets `candidate_id` to the canonical KU ID, and records `merge_strategy: "dedup_exact"`.
+  - The merged extraction confidence is the deterministic maximum of source confidences. It remains extraction confidence only; `verification_status` remains `not_checked`.
+  - Same-ID candidates whose frozen canonical fields disagree (statement, type, evidence refs including excerpts/coordinates/order, attribution, verification state, entities/topics, or run) are excluded from merged output and recorded as merge conflicts. The merger never silently selects one side.
+  - `merged_knowledge_candidates.json` is an M4-03 intermediate artifact, not M4-05 `knowledge_units.json`. Its cache fingerprint hashes the complete M4-02 candidate artifact, merge policy version, and knowledge schema version.

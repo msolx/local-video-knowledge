@@ -43,6 +43,16 @@ from .extractor import (
     extract_knowledge_candidates,
     revalidate_knowledge_candidates_from_raw,
 )
+from .merger import (
+    MERGED_CANDIDATES_SCHEMA_VERSION,
+    MERGE_POLICY_VERSION,
+    MERGED_CANDIDATES_FILENAME,
+    MergeConfig,
+    compute_candidates_artifact_fingerprint,
+    compute_merge_fingerprint,
+    merge_candidates_artifact,
+    merge_knowledge_candidates,
+)
 
 __all__ = [
     "TranscriptChunk",
@@ -92,5 +102,14 @@ __all__ = [
     "extract_chunk_candidates",
     "extract_knowledge_candidates",
     "revalidate_knowledge_candidates_from_raw",
+    # M4-03 Deterministic Merge Pipeline
+    "MERGED_CANDIDATES_SCHEMA_VERSION",
+    "MERGE_POLICY_VERSION",
+    "MERGED_CANDIDATES_FILENAME",
+    "MergeConfig",
+    "compute_candidates_artifact_fingerprint",
+    "compute_merge_fingerprint",
+    "merge_candidates_artifact",
+    "merge_knowledge_candidates",
 ]
 

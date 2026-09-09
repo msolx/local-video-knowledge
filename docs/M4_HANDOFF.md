@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Master Handoff Protocol
 
-> **Milestone Status**: `IN_PROGRESS` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `TODO`)
+> **Milestone Status**: `IN_PROGRESS` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `DONE`, M4-04 = `TODO`)
 > **Source Baseline**: Milestone M3 Sealed at Tag `m3-media-integration-complete` (`1f1c3b9a604d2fbdb9bb63606d6392aa893c080e`).  
 > **Working Branch**: `feat/m4-unified-knowledge-model`
 
@@ -57,6 +57,9 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
    - Cache fingerprint selects a reusable inference artifact from exact inputs/config and includes `knowledge_schema_version`.
    - Asset `extraction_run_id` addresses the configuration fingerprint plus canonical ordered `(chunk_id, raw_response_sha256)` pairs; all chunks share it, and `generated_at` is excluded.
    - Per-chunk raw artifacts persist `cache_fingerprint`, `raw_response`, `raw_response_sha256`, first-generation time, and non-secret config references.
+10. **M4-03 Exact Identity Merge**:
+   - `merged_knowledge_candidates.json` is a deterministic intermediate artifact. Same `knowledge_unit_id` candidates merge only when all frozen canonical fields agree; their chunk and source-candidate lineage is unioned in first-appearance order.
+   - Non-exact candidates remain separate. Same-ID conflicts are audited and excluded rather than silently resolved. M4-03 does not invoke an LLM or enrich entities/topics.
 
 ---
 
@@ -83,11 +86,11 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
 ---
 
 ## 5. NEXT_AGENT_START_HERE
-- **Task**: `M4-03 · Cross-Chunk Deduplication & Merging`
-- **Objective**: Ingest `knowledge_candidates.json` across chunk boundaries, deduplicate identical/overlapping candidates, merge normalized statements, and construct merged unit-level lineage (`input_chunk_ids: [chk1, chk2]`, `source_candidate_ids: [cand1, cand2]`).
+- **Task**: `M4-04 · Entity & Topic Attachment`
+- **Objective**: Attach deterministic entity mentions and topic tags to M4-03 `merged_knowledge_candidates.json`; do not change frozen KU identity or M4-03 lineage.
 - **Entry Points**:
-  - `data/processed/<canonical_id>/knowledge/knowledge_candidates.json` (authoritative M4-02 candidate input)
+  - `data/processed/<canonical_id>/knowledge/merged_knowledge_candidates.json` (authoritative M4-03 merge input)
   - `src/knowledge/models.py` (canonical domain definitions)
-  - `src/knowledge/merger.py` (to be implemented in M4-03)
-  - `tests/test_knowledge_dedup.py` (to be implemented in M4-03)
+  - `src/knowledge/merger.py` (M4-03 deterministic exact merge)
+  - `tests/test_knowledge_dedup.py` (M4-03 coverage)
 

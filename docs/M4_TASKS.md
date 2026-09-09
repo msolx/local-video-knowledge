@@ -2,7 +2,7 @@
 
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
-> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 ~ M4-06 = `TODO`
+> **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE` | M4-04 ~ M4-06 = `TODO`
 
 ---
 
@@ -13,7 +13,7 @@
 | **M4-00** | **Contract Design & Lineage Reconciliation** | Sealed | **`DONE / SEALED`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
 | **M4-01** | **Canonical Model & Domain Layer** | Sealed | **`DONE / SEALED`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
 | **M4-02** | **Chunk-Level Extraction Pipeline** | Sealed | **`DONE / SEALED`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
-| **M4-03** | **Cross-Chunk Deduplication & Merging** | NEXT AGENT | **`TODO`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
+| **M4-03** | **Cross-Chunk Deduplication & Merging** | Complete | **`DONE`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
 | **M4-04** | **Entity & Topic Attachment** | TBD | **`TODO`** | M4-03 | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
 | **M4-05** | **Verification Contract & Audit Render** | TBD | **`TODO`** | M4-04 | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
 | **M4-06** | **M4 End-to-End Acceptance** | TBD | **`TODO`** | M4-01 ~ M4-05 | Full offline regression & formal asset acceptance |
@@ -64,14 +64,13 @@
     - Final reconciliation reused existing raw caches without LLM calls: Video 62 accepted / 0 rejected; Album 6 accepted / 0 rejected.
     - Cache hit verified with zero backend calls and identical content-addressed run IDs.
 
-### M4-03: Cross-Chunk Deduplication & Merging (`TODO` · NEXT AGENT START HERE)
+### M4-03: Cross-Chunk Deduplication & Merging (`DONE`)
 - **Objective**: Deduplicate and merge knowledge units extracted across chunk boundaries, recording merge lineage.
 - **Target Scope**:
-  - Boundary overlap duplicate resolution (preserving overlap identity).
-
-  - Merge lineage tracking (`input_chunk_ids: [chk1, chk2]`, `source_candidate_ids`).
-  - Normalized statement merge.
-  - Unit test suite: `tests/test_knowledge_dedup.py`.
+  - Exact KU-ID boundary-overlap duplicate resolution, preserving complete lineage.
+  - Deterministic `merged_knowledge_candidates.json` cache keyed by source artifact content, policy version, and knowledge schema version.
+  - Same-ID canonical conflicts audited and excluded; non-exact/superset/statement merges deferred.
+  - Offline unit test suite: `tests/test_knowledge_dedup.py`.
 
 ### M4-04: Entity & Topic Attachment (`TODO`)
 - **Objective**: Attach named entity mentions and topic tags to extracted knowledge units.
