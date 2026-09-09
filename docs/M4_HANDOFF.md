@@ -24,13 +24,20 @@ Milestone M4 establishes the **Unified Knowledge Model Layer** for `personal-kno
    - Fields: `source_actor_name`, `source_actor_id`, `speaker_name`, `speaker_id`, `attribution_status`.
    - Generalizes across Douyin, Bilibili, YouTube, Web pages, Forums, PDF documents, and Xiaoheihe.
    - Standard undiarized speech ASR strictly defaults to `speaker_name = null`, `speaker_id = null`, and `attribution_status = "unverified_speaker"`.
-3. **Observation Grounding Contract**:
+3. **EvidenceRef Decoupled from Chunk ID**:
+   - `EvidenceRef` contains only `evidence_id`, `source_excerpt`, `temporal_range`, and `sequence_range`.
+   - `chunk_id` is removed from `EvidenceRef` because chunks are processing windows, not evidence identities.
+4. **Two-Tier Lineage Architecture**:
+   - Document-level `extraction_provenance`: shared model, prompt, backend, and manifest fingerprints.
+   - Unit-level `extraction_lineage`: `extraction_run_id`, `input_chunk_ids`, `candidate_id`, `source_candidate_ids`, `merge_strategy`.
+5. **Overlap Determinism & Merge Traceability**:
+   - Identical statements extracted from overlapping chunks yield identical deterministic `knowledge_unit_id`s.
+   - Merged units record union of `input_chunk_ids` and full candidate trace.
+6. **Observation Grounding Contract**:
    - An `observation` unit requires direct machine-perceptual evidence (`visual_text` OCR, `visual_description` VLM). Spoken descriptions alone cannot produce an `observation`. If an asset has only speech evidence, `observation` is strictly `NOT PRESENT`.
-4. **Deterministic Identity**:
-   - `knowledge_unit_id` is derived deterministically from SHA256 of `(schema_version, canonical_id, unit_type, canonical_ordered_eids, normalized_statement)`.
-5. **Relationships Removed from v1**:
+7. **Relationships Removed from v1**:
    - `relationships` field is formally **DEFERRED**; no placeholder array in schema.
-6. **Internal Audit Markdown**:
+8. **Internal Audit Markdown**:
    - `knowledge.md` is strictly an internal, readable audit document, not an Obsidian vault export.
 
 ---

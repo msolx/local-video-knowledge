@@ -30,11 +30,16 @@
 
 ---
 
-## Decision 3: Encapsulation of Source Excerpts in Evidence References
-- **Context**: Parallel arrays `source_excerpts[]` and `evidence_refs[]` introduce fragility if array order gets misaligned.
+## Decision 3: EvidenceRef Canonical Identity vs Processing Window (Chunk Removal)
+- **Context**: Milestone M3 established that `Evidence Chunk` is an ephemeral processing window, whereas `EvidenceItem` is the durable provenance identity. Due to overlap windowing, a single `evidence_id` can simultaneously exist in multiple chunks. Forcing a single `chunk_id` into `EvidenceRef` binds processing mechanics into evidence identity and creates false provenance conflicts across overlap windows.
 - **Decision**:
-  - `source_excerpt` is directly embedded in each `EvidenceRef` object alongside `evidence_id`, `chunk_id`, and `temporal` / `sequence` bounds.
-  - Eliminates parallel arrays and guarantees 1:1 binding between cited evidence and raw quote.
+  - `EvidenceRef` describes **only** the atomic `EvidenceItem`:
+    - `evidence_id`: Canonical stable identity.
+    - `source_excerpt`: Verbatim quote from the evidence item payload.
+    - `temporal_range`: Temporal bounding interval (if temporal media).
+    - `sequence_range`: Sequence bounding index (if sequential media).
+  - `chunk_id` is **strictly removed** from `EvidenceRef`.
+  - Chunk associations belong exclusively to the extraction lineage layer.
 
 ---
 
@@ -46,12 +51,12 @@
 
 ---
 
-## Decision 5: Deterministic KnowledgeUnit ID Strategy
-- **Context**: Random UUIDs prevent idempotent re-execution and break cache validation.
+## Decision 5: Deterministic KnowledgeUnit ID Strategy & Overlap Invariance
+- **Context**: Random UUIDs prevent idempotent re-execution and break cache validation. If chunk IDs leak into the unit ID hash, identical extractions from overlap regions produce conflicting IDs.
 - **Decision**:
   - `knowledge_unit_id` is computed deterministically:
     `ku_<sha256(schema_version + '|' + canonical_id + '|' + unit_type + '|' + canonical_ordered_eids + '|' + normalized_statement)[:16]>`.
-  - Repeated extraction on unchanged inputs generates identical IDs.
+  - **Overlap Invariance**: Chunk information is never included in the ID hash. If extraction on Chunk 1 and Chunk 2 yields identical unit_type, canonical ordered evidence IDs, and normalized statement, both produce the identical `knowledge_unit_id`.
 
 ---
 
@@ -69,6 +74,7 @@
 - **Decision**:
   - `verification_question` is formally categorized as a system-derived follow-up inquiry.
   - Requires `attribution.attribution_status = "system_derived"` and `verification_status = "not_checked"`.
+  - Must cite grounded `evidence_refs` and retain full unit-level `extraction_lineage`.
 
 ---
 
@@ -105,3 +111,13 @@
   - Spoken evidence ("这里可以看到 X") only proves that the speaker claimed/described X; it cannot alone support an `observation` that X actually exists.
   - If an asset contains only speech evidence (like C10 Video), `observation` is strictly **`NOT PRESENT`**.
   - For image albums where only OCR text is available, observations must strictly describe detected text ("第 N 张图 OCR 检测到文本 X") without hallucinating semantic categories ("赞助商", "战队", "海报") unless supported by VLM evidence.
+
+---
+
+## Decision 11: Two-Layer Extraction Provenance & Unit-Aware Lineage
+- **Context**: Storing full LLM backend, model, prompt, and fingerprint metadata inside every KnowledgeUnit duplicates kilobytes of redundant text dozens of times. Conversely, omitting unit-level input chunk and candidate tracking makes it impossible to audit which chunk window or candidate generated a given unit after cross-chunk deduplication and merging.
+- **Decision**:
+  - Split lineage into two explicit tiers:
+    1. **Document-Level `extraction_provenance`**: Preserves shared execution metadata (backend, model, prompt_version, knowledge_schema_version, temperature, fingerprints).
+    2. **Unit-Level `extraction_lineage`**: Tracks the exact execution context for each unit (`extraction_run_id`, `input_chunk_ids`, `candidate_id`, `source_candidate_ids`, `merge_strategy`).
+  - **Merge Lineage Contract (M4-03 Extension Point)**: When duplicate candidates from overlapping chunks are merged, the canonical unit retains the union of all `input_chunk_ids` and records all original `source_candidate_ids`, ensuring full traceability without losing extractor origin.

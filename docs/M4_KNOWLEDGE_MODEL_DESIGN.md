@@ -1,6 +1,6 @@
 # Milestone M4: Unified Knowledge Model · Comprehensive Design & Contract Specification
 
-> **Document Version**: 1.2 (Reconciled, Source-Neutral & Disk-Grounded)  
+> **Document Version**: 1.3 (Lineage Reconciled, Source-Neutral & Disk-Grounded)  
 > **Status**: APPROVED / ACTIVE  
 > **Scope**: Design and specification freeze for canonical Knowledge Units (`knowledge-units-v1`). Zero production code modified.
 
@@ -14,9 +14,10 @@ The objective of Milestone M4 is to build the **Unified Knowledge Model Layer**:
 1. Transform raw, segmented evidence into discrete, atomic, typed **Knowledge Units** (`knowledge-units-v1`).
 2. Provide a **source-neutral attribution model** capable of expressing content from Douyin, Bilibili, YouTube, Web pages, Forums, PDF documents, and Xiaoheihe without platform-specific bias.
 3. Decouple semantic epistemic types (`claim`, `opinion`, `observation`, `procedure_step`, `verification_question`) from speaker/author attribution.
-4. Enforce strict **observation grounding boundaries**: speech claims can never be promoted to empirical observations without direct perceptual (OCR/VLM) machine evidence.
-5. Guarantee **deterministic identity** and **canonical evidence ordering** across re-runs.
-6. Remove undefined graph placeholders (`relationships` formally deferred).
+4. Separate **Evidence Provenance** from **Processing Chunk Windows**: `EvidenceRef` points strictly to canonical `EvidenceItem` records, while chunk processing history is encapsulated in **Unit-Aware Extraction Lineage**.
+5. Enforce strict **observation grounding boundaries**: speech claims can never be promoted to empirical observations without direct perceptual (OCR/VLM) machine evidence.
+6. Guarantee **deterministic identity** and **canonical evidence ordering** across re-runs and overlap windows.
+7. Remove undefined graph placeholders (`relationships` formally deferred).
 
 ---
 
@@ -82,7 +83,7 @@ To support diverse platforms (Douyin, Bilibili, YouTube, Xiaoheihe, technical bl
 ```json
 {
   "source_actor_name": "老林说",
-  "source_actor_id": "1295683635130569",
+  "source_actor_id": null,
   "speaker_name": null,
   "speaker_id": null,
   "attribution_status": "unverified_speaker"
@@ -112,56 +113,102 @@ To support diverse platforms (Douyin, Bilibili, YouTube, Xiaoheihe, technical bl
 
 ---
 
-## 5. Grounded Evidence Reference Architecture
+## 5. Grounded Evidence Reference Architecture (Chunk Decoupled)
 
-Each citation inside a KnowledgeUnit is encapsulated in an `EvidenceRef` object:
+### 5.1 Evidence Chunk is Not Evidence Identity
+An `Evidence Chunk` represents an execution window for LLM processing, while an `EvidenceItem` represents immutable, physical media evidence. Due to sliding window overlaps, a single `evidence_id` may appear in multiple chunks (e.g., `chk_000001` and `chk_000002`).
 
+Therefore, `chunk_id` is **strictly excluded** from `EvidenceRef`. Forcing a single `chunk_id` into evidence citations corrupts provenance and creates false collisions when the same evidence is seen across overlapping windows.
+
+### 5.2 Canonical `EvidenceRef` Schema
 ```json
 {
   "evidence_id": "ev_seg_000041",
-  "chunk_id": "chk_000001",
+  "source_excerpt": "用主线Vulkan版本的引擎来跑27B",
   "temporal_range": {
     "start": 101.58,
     "end": 104.12,
     "duration": 2.54
   },
-  "sequence_range": null,
-  "source_excerpt": "用主线Vulkan版本的引擎来跑27B"
+  "sequence_range": null
 }
 ```
 
-### Reference Integrity Rules
+### 5.3 Reference Integrity Rules
 1. **No Parallel Arrays**: `source_excerpt` is directly paired with its `evidence_id`.
 2. **Canonical Ordering**: References inside `evidence_refs[]` MUST strictly mirror their physical sequence in `evidence_manifest.json` (temporal ascending for speech; sequence index ascending for images/documents). Lexical sorting by ID string is prohibited.
 3. **Verbatim Excerpt**: `source_excerpt` must match the actual payload text from the referenced evidence item character-for-character.
 
 ---
 
-## 6. Deterministic KnowledgeUnit ID Formulation
+## 6. Two-Layer Extraction Lineage & Provenance Architecture
 
-To ensure idempotency across distributed nodes and repeated extraction runs:
+To eliminate massive metadata duplication while preserving exact auditing for every extracted unit, lineage is organized into two distinct layers:
+
+### 6.1 Document-Level `extraction_provenance`
+Stores shared configuration and model execution metadata for the entire document:
+- `backend`: e.g., `"lm-studio"`
+- `model`: e.g., `"qwen2.5-7b-instruct"`
+- `prompt_version`: e.g., `"knowledge-extraction-v4.0"`
+- `knowledge_schema_version`: `"knowledge-units-v1"`
+- `temperature`: `0.1`
+- `generated_at`: ISO timestamp
+- `evidence_manifest_fingerprint`: SHA-256 of `evidence_manifest.json`
+- `evidence_chunks_fingerprint`: SHA-256 of `evidence_chunks.json`
+
+### 6.2 Unit-Level `extraction_lineage`
+Every individual `KnowledgeUnit` contains a compact lineage record answering: *"Which extraction run, from which chunk candidates was this unit derived?"*
+
+```json
+{
+  "extraction_run_id": "run_20260909_001",
+  "input_chunk_ids": ["chk_000001"],
+  "candidate_id": "cand_chk1_001",
+  "source_candidate_ids": ["cand_chk1_001"],
+  "merge_strategy": null
+}
+```
+
+- **`extraction_run_id`** (`str`): Stable identifier of the extraction execution run.
+- **`input_chunk_ids`** (`List[str]`): List of chunk IDs from which this unit originated. For unmerged units, contains exactly one chunk ID (e.g. `["chk_000001"]`).
+- **`candidate_id`** (`str`): Unique identifier of the extraction candidate within the chunk extraction run.
+- **`source_candidate_ids`** (`List[str]`): Trace of candidate IDs feeding into this unit.
+- **`merge_strategy`** (`Optional[str]`): `null` for unmerged units; `"dedup_exact"`, `"superset_absorption"`, or `"statement_merge"` after M4-03 merging.
+
+### 6.3 Merge Lineage (M4-03 Extension Point)
+When candidates from overlapping chunks are merged during M4-03 deduplication:
+```text
+Candidate A (chk_000001, cand_chk1_005) + Candidate B (chk_000002, cand_chk2_001)
+                                ↓
+Merged Canonical KnowledgeUnit (ku_3e18a992cb412d09)
+  extraction_lineage:
+    input_chunk_ids: ["chk_000001", "chk_000002"]
+    candidate_id: "ku_3e18a992cb412d09"
+    source_candidate_ids: ["cand_chk1_005", "cand_chk2_001"]
+    merge_strategy: "dedup_exact"
+```
+The canonical unit preserves complete multi-chunk lineage without discarding original extractor provenance.
+
+---
+
+## 7. Deterministic KnowledgeUnit ID & Overlap Invariance
+
+To guarantee idempotency and overlap invariance:
 
 $$	ext{raw\_str} = 	ext{schema\_version} \parallel 	ext{"\|"} \parallel 	ext{canonical\_id} \parallel 	ext{"\|"} \parallel 	ext{unit\_type} \parallel 	ext{"\|"} \parallel 	ext{canonical\_ordered\_eids} \parallel 	ext{"\|"} \parallel 	ext{normalized\_statement}$$
 
 $$	ext{knowledge\_unit\_id} = 	ext{"ku\_"} + 	ext{SHA256}(	ext{raw\_str})[:16]$$
 
-- `canonical_ordered_eids`: Comma-delimited list of evidence IDs in temporal/sequence order (e.g., `"ev_seg_000041,ev_seg_000042"`).
-- `normalized_statement`: Statement text stripped of leading/trailing whitespace and normalized for internal spaces.
+### Overlap Invariance Rule
+- Chunk information is **never** included in the ID hash input.
+- If Chunk 1 extractor and Chunk 2 extractor both process overlapping evidence items and produce the same `unit_type`, `canonical_ordered_eids`, and `normalized_statement`, the resulting `knowledge_unit_id` is **100% identical**.
 
 ---
 
-## 7. Extraction Confidence vs Verification Status
+## 8. Extraction Confidence vs Verification Status
 
 - **`extraction_confidence`** (`float`, `[0.0, 1.0]`): Measures LLM parsing fidelity and structural compliance relative to context. It does NOT assert whether the statement is true in the real world.
-- **`verification_status`** (`str`): Factual verification state. Defaults to `"not_checked"`. Possible future values: `"verified"`, `"contested"`, `"unsupported"`. In offline M4, all units remain `"not_checked"`.
-
----
-
-## 8. Removal of Relationships from KnowledgeUnit v1 (DEFERRED)
-
-The placeholder array `relationships: []` is completely **removed** from KnowledgeUnit v1.
-- Unit-to-unit semantic graph edges (e.g., `supports`, `refutes`, `elaborates`) are formally **DEFERRED** to a dedicated Knowledge Graph milestone.
-- Only `entities` and `topics` are retained as lightweight indexing structures.
+- **`verification_status`** (`str`): Factual verification state. Defaults to `"not_checked"`. In offline M4, all units remain `"not_checked"`.
 
 ---
 
@@ -199,7 +246,8 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
           "extraction_confidence",
           "verification_status",
           "entities",
-          "topics"
+          "topics",
+          "extraction_lineage"
         ],
         "properties": {
           "knowledge_unit_id": { "type": "string", "pattern": "^ku_[a-f0-9]{16}$" },
@@ -214,10 +262,10 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
             "minItems": 1,
             "items": {
               "type": "object",
-              "required": ["evidence_id", "chunk_id", "source_excerpt"],
+              "required": ["evidence_id", "source_excerpt"],
               "properties": {
                 "evidence_id": { "type": "string" },
-                "chunk_id": { "type": "string" },
+                "source_excerpt": { "type": "string" },
                 "temporal_range": {
                   "type": ["object", "null"],
                   "properties": {
@@ -231,8 +279,7 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
                   "properties": {
                     "sequence_index": { "type": "integer" }
                   }
-                },
-                "source_excerpt": { "type": "string" }
+                }
               }
             }
           },
@@ -276,6 +323,17 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
           "topics": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "extraction_lineage": {
+            "type": "object",
+            "required": ["extraction_run_id", "input_chunk_ids", "source_candidate_ids"],
+            "properties": {
+              "extraction_run_id": { "type": "string" },
+              "input_chunk_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+              "candidate_id": { "type": ["string", "null"] },
+              "source_candidate_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+              "merge_strategy": { "type": ["string", "null"] }
+            }
           }
         }
       }
@@ -290,8 +348,7 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
         "temperature",
         "generated_at",
         "evidence_manifest_fingerprint",
-        "evidence_chunks_fingerprint",
-        "input_chunk_ids"
+        "evidence_chunks_fingerprint"
       ],
       "properties": {
         "backend": { "type": "string" },
@@ -301,8 +358,7 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
         "temperature": { "type": "number" },
         "generated_at": { "type": "string", "format": "date-time" },
         "evidence_manifest_fingerprint": { "type": "string" },
-        "evidence_chunks_fingerprint": { "type": "string" },
-        "input_chunk_ids": { "type": "array", "items": { "type": "string" } }
+        "evidence_chunks_fingerprint": { "type": "string" }
       }
     }
   }
@@ -311,25 +367,13 @@ The placeholder array `relationships: []` is completely **removed** from Knowled
 
 ---
 
-## 10. Legacy Code Reconciliation & Backward Compatibility
-
-| Legacy Field / Type | Canonical `knowledge-units-v1` Target | Migration & Compatibility Rules |
-| :--- | :--- | :--- |
-| `unit_type: "author_claim"` | `unit_type: "claim"` | Map type to `claim`. Set `source_actor_name` from asset author. Default `attribution_status` to `unverified_speaker` unless speech explicitly proves speaker identity. |
-| `unit_type: "author_opinion"` | `unit_type: "opinion"` | Map type to `opinion`. Attribution rules identical to above. |
-| `source_excerpts: List[str]` | Embedded `EvidenceRef.source_excerpt` | Zip parallel excerpt array into each `EvidenceRef` object. |
-| `confidence: float` | `extraction_confidence: float` | Directly map value; rename key to prevent truth-value confusion. |
-| `relationships: []` | **REMOVED** | Dropped from schema; graph linking deferred to dedicated milestone. |
-
----
-
-## 11. Grounded C10 Asset Inspections & Real Examples (Disk Only)
+## 10. Grounded C10 Asset Inspections & Real Examples (Disk Only)
 
 All IDs, excerpts, modalities, and bounds below are drawn strictly from physical files on disk:
 - Video: `data/processed/douyin_7681603850364521734/evidence_manifest.json` & `evidence_chunks.json`
 - Album: `data/processed/douyin_7682038498466993905/evidence_manifest.json` & `evidence_chunks.json`
 
-### 11.1 C10 Video: `douyin_7681603850364521734`
+### 10.1 C10 Video: `douyin_7681603850364521734`
 - **Metadata**: Title: `395 128GB内存版跑Qwen3.8-27B实测`, Source Actor: `老林说`, Platform: Douyin.
 - **Evidence Characteristics**: Exactly 184 evidence items (`ev_seg_000001` through `ev_seg_000184`), all of modality `speech`. Visual/OCR evidence is **NOT PRESENT**.
 
@@ -343,38 +387,33 @@ All IDs, excerpts, modalities, and bounds below are drawn strictly from physical
   "evidence_refs": [
     {
       "evidence_id": "ev_seg_000041",
-      "chunk_id": "chk_000001",
+      "source_excerpt": "用主线Vulkan版本的引擎来跑27B",
       "temporal_range": { "start": 101.58, "end": 104.12, "duration": 2.54 },
-      "sequence_range": null,
-      "source_excerpt": "用主线Vulkan版本的引擎来跑27B"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000042",
-      "chunk_id": "chk_000001",
+      "source_excerpt": "看到的十几Token的速度",
       "temporal_range": { "start": 104.12, "end": 105.82, "duration": 1.7 },
-      "sequence_range": null,
-      "source_excerpt": "看到的十几Token的速度"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000046",
-      "chunk_id": "chk_000001",
+      "source_excerpt": "Vulkan后端在StructHalo上量化矩阵走的是通用算子",
       "temporal_range": { "start": 109.42, "end": 112.42, "duration": 3.0 },
-      "sequence_range": null,
-      "source_excerpt": "Vulkan后端在StructHalo上量化矩阵走的是通用算子"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000047",
-      "chunk_id": "chk_000001",
+      "source_excerpt": "没有吃到RDNA的3.5协作矩阵的红利",
       "temporal_range": { "start": 112.42, "end": 115.12, "duration": 2.7 },
-      "sequence_range": null,
-      "source_excerpt": "没有吃到RDNA的3.5协作矩阵的红利"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000048",
-      "chunk_id": "chk_000001",
+      "source_excerpt": "所以速度自然起不来",
       "temporal_range": { "start": 115.6, "end": 117.52, "duration": 1.92 },
-      "sequence_range": null,
-      "source_excerpt": "所以速度自然起不来"
+      "sequence_range": null
     }
   ],
   "attribution": {
@@ -392,7 +431,14 @@ All IDs, excerpts, modalities, and bounds below are drawn strictly from physical
     { "entity_name": "RDNA 3.5", "category": "hardware_architecture" },
     { "entity_name": "27B", "category": "model_family" }
   ],
-  "topics": ["端侧大模型", "统一内存", "AIMAX395", "strixhalo", "qwen"]
+  "topics": ["端侧大模型", "统一内存", "AIMAX395", "strixhalo", "qwen"],
+  "extraction_lineage": {
+    "extraction_run_id": "run_c10_video_001",
+    "input_chunk_ids": ["chk_000001"],
+    "candidate_id": "cand_chk1_004",
+    "source_candidate_ids": ["cand_chk1_004"],
+    "merge_strategy": null
+  }
 }
 ```
 
@@ -406,59 +452,51 @@ All IDs, excerpts, modalities, and bounds below are drawn strictly from physical
   "evidence_refs": [
     {
       "evidence_id": "ev_seg_000154",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "所以再看到任何的评测",
       "temporal_range": { "start": 314.64, "end": 317.22, "duration": 2.58 },
-      "sequence_range": null,
-      "source_excerpt": "所以再看到任何的评测"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000155",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "先问三个问题",
       "temporal_range": { "start": 317.22, "end": 318.4, "duration": 1.18 },
-      "sequence_range": null,
-      "source_excerpt": "先问三个问题"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000156",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "它用的是什么引擎",
       "temporal_range": { "start": 318.4, "end": 319.98, "duration": 1.58 },
-      "sequence_range": null,
-      "source_excerpt": "它用的是什么引擎"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000157",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "用的是什么任务类型",
       "temporal_range": { "start": 319.98, "end": 321.3, "duration": 1.32 },
-      "sequence_range": null,
-      "source_excerpt": "用的是什么任务类型"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000158",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "然后Thinking有没有开",
       "temporal_range": { "start": 321.3, "end": 323.1, "duration": 1.8 },
-      "sequence_range": null,
-      "source_excerpt": "然后Thinking有没有开"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000159",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "这三个变量",
       "temporal_range": { "start": 323.1, "end": 323.84, "duration": 0.74 },
-      "sequence_range": null,
-      "source_excerpt": "这三个变量"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000160",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "能让同一个模型",
       "temporal_range": { "start": 323.84, "end": 324.64, "duration": 0.8 },
-      "sequence_range": null,
-      "source_excerpt": "能让同一个模型"
+      "sequence_range": null
     },
     {
       "evidence_id": "ev_seg_000161",
-      "chunk_id": "chk_000004",
+      "source_excerpt": "的速度差出好几倍",
       "temporal_range": { "start": 324.66, "end": 326.1, "duration": 1.44 },
-      "sequence_range": null,
-      "source_excerpt": "的速度差出好几倍"
+      "sequence_range": null
     }
   ],
   "attribution": {
@@ -473,21 +511,45 @@ All IDs, excerpts, modalities, and bounds below are drawn strictly from physical
   "entities": [
     { "entity_name": "Thinking模式", "category": "model_parameter" }
   ],
-  "topics": ["评测方法", "推理引擎", "strixhalo"]
+  "topics": ["评测方法", "推理引擎", "strixhalo"],
+  "extraction_lineage": {
+    "extraction_run_id": "run_c10_video_001",
+    "input_chunk_ids": ["chk_000004"],
+    "candidate_id": "cand_chk4_002",
+    "source_candidate_ids": ["cand_chk4_002"],
+    "merge_strategy": null
+  }
 }
 ```
 
-#### ③ C10 Video: `observation` Status
-- **Status**: **`NOT PRESENT`**.
-- **Reason**: The video evidence manifest contains exclusively speech evidence (`modality: "speech"` across all 184 items). In accordance with the Observation Grounding Contract (Decision 10), speech utterances describing visual displays cannot be upgraded to empirical observations without direct perceptual evidence (OCR/VLM). Therefore, no `observation` unit exists for this asset.
+#### ③ C10 Video Overlap Example (`chk_000001` & `chk_000002`)
+In the physical C10 Video chunks:
+- `chk_000001` spans `ev_seg_000001` through `ev_seg_000048`
+- `chk_000002` spans `ev_seg_000047` through `ev_seg_000096`
+- **Overlap Items**: `ev_seg_000047` and `ev_seg_000048` appear in both chunks.
 
-#### ④ C10 Video: `procedure_step` Status
-- **Status**: **`NOT PRESENT`**.
-- **Reason**: The spoken discourse focuses on architecture analysis, benchmark interpretations, and testing advice. It does not contain step-by-step reproducible command invocations or code snippets.
+If an extraction candidate is formed on `ev_seg_000047` and `ev_seg_000048`:
+- Candidate from `chk_000001`:
+  - `evidence_refs`: `[{"evidence_id": "ev_seg_000047", ...}, {"evidence_id": "ev_seg_000048", ...}]`
+  - `knowledge_unit_id`: Computed deterministically from `(schema_version, canonical_id, unit_type, "ev_seg_000047,ev_seg_000048", normalized_statement)`.
+- Candidate from `chk_000002`:
+  - `evidence_refs`: Identical.
+  - `knowledge_unit_id`: **Identical hash**.
+- **Post-Merge Lineage**:
+  ```json
+  "extraction_lineage": {
+    "extraction_run_id": "run_c10_video_001",
+    "input_chunk_ids": ["chk_000001", "chk_000002"],
+    "candidate_id": "ku_overlap_example_id",
+    "source_candidate_ids": ["cand_chk1_008", "cand_chk2_001"],
+    "merge_strategy": "dedup_exact"
+  }
+  ```
+Neither `EvidenceRef` nor `knowledge_unit_id` changes based on which chunk window detected it.
 
 ---
 
-### 11.2 C10 Image Album: `douyin_7682038498466993905`
+### 10.2 C10 Image Album: `douyin_7682038498466993905`
 - **Metadata**: Source Actor: `姑妈有神王`, Actor ID: `1295683635130569`, Total Images: **3** (`7682038498466993905_img_001.webp` through `img_003.webp`).
 - **Evidence Characteristics**:
   - `ve_img_001` (seq 1, `visual_text`): OCR text `"logitech
@@ -509,11 +571,10 @@ SMILEY
   "evidence_refs": [
     {
       "evidence_id": "ve_img_001",
-      "chunk_id": "chk_000001",
-      "temporal_range": null,
-      "sequence_range": { "sequence_index": 1 },
       "source_excerpt": "logitech
-INAMAX"
+INAMAX",
+      "temporal_range": null,
+      "sequence_range": { "sequence_index": 1 }
     }
   ],
   "attribution": {
@@ -529,7 +590,14 @@ INAMAX"
     { "entity_name": "logitech", "category": "brand_text" },
     { "entity_name": "INAMAX", "category": "brand_text" }
   ],
-  "topics": ["英雄联盟", "g2", "caps"]
+  "topics": ["英雄联盟", "g2", "caps"],
+  "extraction_lineage": {
+    "extraction_run_id": "run_c10_album_001",
+    "input_chunk_ids": ["chk_000001"],
+    "candidate_id": "cand_chk1_001",
+    "source_candidate_ids": ["cand_chk1_001"],
+    "merge_strategy": null
+  }
 }
 ```
 
@@ -543,13 +611,12 @@ INAMAX"
   "evidence_refs": [
     {
       "evidence_id": "ve_img_002",
-      "chunk_id": "chk_000001",
-      "temporal_range": null,
-      "sequence_range": { "sequence_index": 2 },
       "source_excerpt": "lognach
 AGON
 SMILEY
-081"
+081",
+      "temporal_range": null,
+      "sequence_range": { "sequence_index": 2 }
     }
   ],
   "attribution": {
@@ -565,31 +632,34 @@ SMILEY
     { "entity_name": "AGON", "category": "brand_text" },
     { "entity_name": "SMILEY", "category": "text_mention" }
   ],
-  "topics": ["英雄联盟", "g2", "caps"]
+  "topics": ["英雄联盟", "g2", "caps"],
+  "extraction_lineage": {
+    "extraction_run_id": "run_c10_album_001",
+    "input_chunk_ids": ["chk_000001"],
+    "candidate_id": "cand_chk1_002",
+    "source_candidate_ids": ["cand_chk1_002"],
+    "merge_strategy": null
+  }
 }
 ```
 
-#### ③ C10 Album: `claim` / `opinion` / `procedure_step` Status
-- **Status**: **`NOT PRESENT`**.
-- **Reason**: The album consists exclusively of 3 stage photography stills. There is no accompanying textual narration, spoken audio, argumentative assertion, or technical procedure. Fabricating claims or opinions from pure photo stills is strictly forbidden.
-
 ---
 
-## 12. Corrected Milestone M4 Task Breakdown
+## 11. Corrected Milestone M4 Task Breakdown
 
 | Task ID | Task Title | Core Objective | Scope Boundary | Target Deliverables |
 | :--- | :--- | :--- | :--- | :--- |
-| **M4-00** | **Contract Design & Reconciliation** | Freeze `knowledge-units-v1` schema, source-neutral attribution, observation contract, and task breakdown | Docs only; zero production code modification | `docs/M4_*.md` (Design Freeze) |
-| **M4-01** | **Canonical Model & Domain Layer** | Implement `CanonicalKnowledgeUnit` domain dataclasses and serialization | Pydantic/dataclass schema, validation, deterministic ID calculation | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
-| **M4-02** | **Chunk-Level Extraction Pipeline** | Extract structured knowledge units from `evidence_chunks.json` | LLM backend prompts, structured output parser, LM Studio lifecycle integration | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
-| **M4-03** | **Cross-Chunk Deduplication & Merging** | Resolve boundary overlap duplicates and merge continuous units | Exact match dedup, superset resolution, normalized statement merge | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
+| **M4-00** | **Contract Design & Lineage Reconciliation** | Freeze `knowledge-units-v1` schema, source-neutral attribution, unit-aware lineage, and grounded C10 examples | Docs only; zero production code modification | `docs/M4_*.md` (Design Freeze) |
+| **M4-01** | **Canonical Model & Domain Layer** | Implement `CanonicalKnowledgeUnit`, `EvidenceRef`, `UnitExtractionLineage` dataclasses | Pydantic/dataclass schema, validation, deterministic ID calculation | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
+| **M4-02** | **Chunk-Level Extraction Pipeline** | Extract candidate knowledge units with unit-aware lineage from `evidence_chunks.json` | LLM backend prompts, structured output parser, LM Studio lifecycle integration | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
+| **M4-03** | **Cross-Chunk Deduplication & Merging** | Resolve boundary overlap duplicates and merge continuous units with merge lineage | Exact match dedup, superset resolution, normalized statement merge | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
 | **M4-04** | **Entity & Topic Attachment** | Attach recognized entity mentions and topic tags to units | Structured metadata attachment, vocabulary normalization | `src/knowledge/enrichment.py`, `tests/test_knowledge_enrichment.py` |
 | **M4-05** | **Verification Contract & Audit Render** | Output `knowledge_units.json` and human-readable audit `knowledge.md` | Verification state contracts, human-readable audit render (NOT Obsidian) | `src/knowledge/render.py`, `tests/test_knowledge_render.py` |
 | **M4-06** | **End-to-End Acceptance** | Full offline regression and C10 verification | End-to-end verification, regression baselines, freeze audit | `docs/M4_FINAL_ACCEPTANCE.md` |
 
 ---
 
-## 13. Explicit Non-Goals in Milestone M4
+## 12. Explicit Non-Goals in Milestone M4
 
 1. **No External RAG Engine**: Embedding generation and vector databases (Chroma, Qdrant, LanceDB) are deferred to a dedicated retrieval milestone.
 2. **No Obsidian Vault Synchronization**: `knowledge.md` is strictly an internal, human-readable audit representation; publishing to Obsidian vaults is deferred.

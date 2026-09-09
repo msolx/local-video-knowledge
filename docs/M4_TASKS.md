@@ -10,7 +10,7 @@
 
 | Task ID | Task Title | Owner | Status | Dependencies | Target Deliverable |
 | :--- | :--- | :---: | :---: | :--- | :--- |
-| **M4-00** | **Contract Design & Grounded Reconciliation** | Current Agent | **`DONE`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
+| **M4-00** | **Contract Design & Lineage Reconciliation** | Current Agent | **`DONE`** | M3 Acceptance | `docs/M4_*.md` (Design & Contract Freeze) |
 | **M4-01** | **Canonical Model & Domain Layer** | TBD | **`TODO`** | M4-00 | `src/knowledge/models.py`, `tests/test_knowledge_models.py` |
 | **M4-02** | **Chunk-Level Extraction Pipeline** | TBD | **`TODO`** | M4-01 | `src/knowledge/extractor.py`, `tests/test_knowledge_extraction.py` |
 | **M4-03** | **Cross-Chunk Deduplication & Merging** | TBD | **`TODO`** | M4-02 | `src/knowledge/merger.py`, `tests/test_knowledge_dedup.py` |
@@ -22,34 +22,36 @@
 
 ## 2. Detailed Task Breakdown
 
-### M4-00: Contract Design & Grounded Reconciliation (`DONE`)
-- **Objective**: Freeze Canonical KnowledgeUnit contract, schema, source-neutral attribution, observation contract, and grounded C10 examples without modifying production code.
+### M4-00: Contract Design & Lineage Reconciliation (`DONE`)
+- **Objective**: Freeze Canonical KnowledgeUnit contract, schema, source-neutral attribution, unit-aware lineage, overlap invariance, and grounded C10 examples without modifying production code.
 - **Deliverables**:
-  - `docs/M4_KNOWLEDGE_MODEL_DESIGN.md`: Authoritative design specification (reconciled v1.2).
+  - `docs/M4_KNOWLEDGE_MODEL_DESIGN.md`: Authoritative design specification (reconciled v1.3).
   - `docs/M4_HANDOFF.md`: Master handoff and cross-agent protocol.
-  - `docs/M4_DECISIONS.md`: Architectural decisions log (Decisions 1-10).
+  - `docs/M4_DECISIONS.md`: Architectural decisions log (Decisions 1-11).
   - `docs/M4_TASKS.md`: Task board and progression matrix.
 
 ### M4-01: Canonical Model & Domain Layer (`TODO`)
 - **Objective**: Implement core domain models and validation in Python.
 - **Target Scope**:
-  - `CanonicalKnowledgeUnit`, `EvidenceRef`, `AttributionInfo`, `EntityMention`.
-  - Deterministic ID generator (`ku_<hash>`).
+  - `CanonicalKnowledgeUnit`, `EvidenceRef` (decoupled from chunk), `AttributionInfo`, `UnitExtractionLineage`, `EntityMention`.
+  - Deterministic ID generator (`ku_<hash>` using schema_version, canonical_id, unit_type, canonical_ordered_eids, normalized_statement).
   - Unit test suite: `tests/test_knowledge_models.py`.
 
 ### M4-02: Chunk-Level Extraction Pipeline (`TODO`)
-- **Objective**: Implement LLM-based structured knowledge extraction per chunk.
+- **Objective**: Implement LLM-based structured knowledge extraction per chunk with unit-aware lineage.
 - **Target Scope**:
   - Ingest `evidence_chunks.json`.
   - Structured extraction prompt enforcing `knowledge-units-v1`.
   - Source-neutral attribution mapping and default `unverified_speaker` logic.
+  - Unit lineage population (`input_chunk_ids: [chunk_id]`, `candidate_id`).
   - Integration with local LM Studio worker.
   - Unit test suite: `tests/test_knowledge_extraction.py`.
 
 ### M4-03: Cross-Chunk Deduplication & Merging (`TODO`)
-- **Objective**: Deduplicate and merge knowledge units extracted across chunk boundaries.
+- **Objective**: Deduplicate and merge knowledge units extracted across chunk boundaries, recording merge lineage.
 - **Target Scope**:
-  - Boundary overlap duplicate resolution.
+  - Boundary overlap duplicate resolution (preserving overlap identity).
+  - Merge lineage tracking (`input_chunk_ids: [chk1, chk2]`, `source_candidate_ids`).
   - Normalized statement merge.
   - Unit test suite: `tests/test_knowledge_dedup.py`.
 
@@ -72,5 +74,5 @@
 - **Objective**: Execute end-to-end regression across all formal test assets (C10 Video & C10 Album).
 - **Target Scope**:
   - Validate JSON schema conformance (`knowledge-units-v1`).
-  - Verify deterministic IDs, canonical evidence ordering, and audit rendering.
+  - Verify deterministic IDs, canonical evidence ordering, unit-aware lineage, and audit rendering.
   - Deliverable: `docs/M4_FINAL_ACCEPTANCE.md`.
