@@ -33,7 +33,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,6 +42,7 @@ from .models import (
     OPERATIONS_POLICY_VERSION,
     OPERATIONS_USER_VERSION,
     DEFAULT_OPERATIONS_PATH,
+    VALID_CAPABILITIES,
     AssetLifecycleState,
     JobStage,
     JobState,
@@ -50,17 +51,22 @@ from .models import (
     TERMINAL_JOB_STATES,
     LEASE_HELD_JOB_STATES,
     VALID_TRIGGER_TYPES,
+    ClaimedJob,
     EnqueueResult,
     OperationsValidationResult,
     compute_job_id,
     compute_next_retry_at,
+    format_iso,
     is_legal_asset_transition,
     is_legal_job_transition,
     is_terminal_job_state,
     is_valid_job_id,
+    new_lease_token,
+    normalize_capabilities,
     normalize_identity_component,
     normalize_input_fingerprint,
     normalize_job_stage,
+    parse_iso,
     utc_now_iso,
 )
 
@@ -69,10 +75,14 @@ __all__ = [
     "OPERATIONS_POLICY_VERSION",
     "OPERATIONS_USER_VERSION",
     "DEFAULT_OPERATIONS_PATH",
+    "VALID_CAPABILITIES",
     "OperationsError",
     "OperationsSchemaError",
     "OperationsStateError",
     "OperationsIntegrityError",
+    "StaleLeaseError",
+    "DEFAULT_LEASE_DURATION_SECONDS",
+    "DEFAULT_WORKER_STALE_THRESHOLD_SECONDS",
     "create_operations_store",
     "open_operations_store",
     "register_asset",
@@ -100,11 +110,24 @@ __all__ = [
     "worker_heartbeat",
     "list_workers",
     "list_events",
+    "claim_next_job",
+    "renew_job_lease",
+    "start_claimed_job",
+    "complete_job_success",
+    "complete_job_retryable_failure",
+    "complete_job_terminal_failure",
+    "recover_expired_leases",
+    "is_worker_stale",
+    "list_workers_with_status",
     "validate_operations_store",
 ]
 
 # Default max attempts per job stage (configurable per enqueue).
 DEFAULT_MAX_ATTEMPTS = 5
+
+# M6-02 lease / heartbeat defaults (configurable, injectable in tests).
+DEFAULT_LEASE_DURATION_SECONDS = 120
+DEFAULT_WORKER_STALE_THRESHOLD_SECONDS = 120
 
 # event types
 EVENT_ASSET_REGISTERED = "asset_registered"
@@ -124,6 +147,9 @@ EVENT_LEASE_SET = "job_lease_set"
 EVENT_LEASE_CLEARED = "job_lease_cleared"
 EVENT_WORKER_REGISTERED = "worker_registered"
 EVENT_WORKER_HEARTBEAT = "worker_heartbeat"
+EVENT_JOB_CLAIMED = "job_claimed"
+EVENT_LEASE_EXPIRED_REQUEUED = "lease_expired_requeued"
+EVENT_ATTEMPT_CLOSED_EXPIRED = "attempt_closed_lease_expired"
 
 _META_SCHEMA_VERSION_KEY = "schema_version"
 _META_POLICY_VERSION_KEY = "policy_version"
@@ -144,6 +170,21 @@ class OperationsStateError(OperationsError):
 
 class OperationsIntegrityError(OperationsError):
     """Raised on identity/fingerprint/reference integrity violations."""
+
+
+class StaleLeaseError(OperationsError):
+    """Raised when a job mutation is attempted with a lease that is no longer
+    current (superseded by a newer claim, or the job left its leased state).
+
+    The fence (lease_token) is the only proof of execution ownership: checking
+    only ``lease_owner == worker_id`` is insufficient because the same worker
+    process may later reclaim the same job with a fresh token.
+    """
+
+
+def _capability_match(required: list[str], worker_capabilities) -> bool:
+    """Exact all-of capability matching. Empty requirement always matches."""
+    return set(required).issubset(set(worker_capabilities or ()))
 
 
 # ----------------------------------------------------------------------
@@ -264,6 +305,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     leased_at TEXT,
     lease_expires_at TEXT,
     lease_token TEXT,
+    required_capabilities_json TEXT NOT NULL DEFAULT '[]',
     enqueued_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -858,6 +900,7 @@ def enqueue_job(
     pipeline_run_id: Optional[str] = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     priority: int = 0,
+    required_capabilities: Optional[list[str]] = None,
     metadata: Optional[dict[str, Any]] = None,
     now: Optional[str] = None,
 ) -> EnqueueResult:
@@ -869,6 +912,11 @@ def enqueue_job(
       - FAILED_RETRYABLE       -> no new job; retry/requeue handles the same job.
       - FAILED_TERMINAL/CANCELLED -> not silently resurrected.
     Changed input_fingerprint or policy_version -> new identity -> new job.
+
+    ``required_capabilities`` (M6-02) is capability-dispatch metadata: an
+    all-of requirement the claiming worker must satisfy. It is NOT part of the
+    deterministic job identity — a job re-enqueued with identical identity but
+    different capability requirements collapses to the same job.
     """
     db_path = Path(db_path)
     now = now or utc_now_iso()
@@ -880,6 +928,7 @@ def enqueue_job(
     canonical_id = normalize_identity_component(canonical_id)
     if max_attempts < 1:
         raise OperationsIntegrityError("max_attempts must be >= 1")
+    required_caps = normalize_capabilities(required_capabilities)
 
     job_id = compute_job_id(platform, content_id, stage, fingerprint, policy_version)
 
@@ -987,8 +1036,9 @@ def enqueue_job(
                     state, input_fingerprint, policy_version, pipeline_run_id,
                     priority, max_attempts, attempt_count, next_retry_at,
                     lease_owner, leased_at, lease_expires_at, lease_token,
+                    required_capabilities_json,
                     enqueued_at, updated_at, created_at, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -1002,6 +1052,7 @@ def enqueue_job(
                     pipeline_run_id,
                     priority,
                     max_attempts,
+                    _json_dumps(required_caps),
                     now,
                     now,
                     now,
@@ -1634,7 +1685,10 @@ def finish_attempt(
                     )
                 ),
                 next_retry_at=next_retry_at,
-                lease_cleared=to_state in TERMINAL_JOB_STATES,
+                lease_cleared=(
+                    to_state in TERMINAL_JOB_STATES
+                    or to_state == JobState.FAILED_RETRYABLE.value
+                ),
                 metadata={
                     "attempt_number": attempt["attempt_number"],
                     "outcome": outcome,
@@ -1838,6 +1892,705 @@ def list_workers(db_path: Path) -> list[dict[str, Any]]:
 
 
 # ----------------------------------------------------------------------
+# M6-02 Capability-aware claim + lease protocol
+#
+# Execution model: durable queue + atomic claim + lease + fencing token +
+# idempotent stage execution => at-least-once semantics (NOT exactly-once).
+# Only the current lease holder may mutate an active job; every ownership
+# mutation carries (job_id, worker_id, lease_token).
+# ----------------------------------------------------------------------
+
+
+def _load_job_or_none(conn: sqlite3.Connection, job_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+
+
+def _check_lease_holder(
+    conn: sqlite3.Connection, job: sqlite3.Row, worker_id: str, lease_token: str
+) -> None:
+    """Verify the mutation caller still owns the current lease. Raises
+    StaleLeaseError on any mismatch (token is the fence, not just worker_id)."""
+    if job["state"] not in LEASE_HELD_JOB_STATES:
+        raise StaleLeaseError(
+            f"job {job['job_id']} is in {job['state']}; no active lease to mutate"
+        )
+    if job["lease_owner"] != worker_id or job["lease_token"] != lease_token:
+        raise StaleLeaseError(
+            f"job {job['job_id']} lease no longer held by "
+            f"{worker_id}/{lease_token} (current {job['lease_owner']}/"
+            f"{job['lease_token']})"
+        )
+
+
+def _job_to_claimed(
+    job: sqlite3.Row, worker_id: str, now: str, lease_expires_at: str, lease_token: str
+) -> ClaimedJob:
+    return ClaimedJob(
+        job_id=job["job_id"],
+        stage=job["stage"],
+        canonical_id=job["canonical_id"],
+        platform=job["platform"],
+        platform_content_id=job["platform_content_id"],
+        input_fingerprint=job["input_fingerprint"],
+        required_capabilities=frozenset(_json_loads(job["required_capabilities_json"])),
+        lease_owner=worker_id,
+        leased_at=now,
+        lease_expires_at=lease_expires_at,
+        _lease_token=lease_token,
+    )
+
+
+def claim_next_job(
+    db_path: Path,
+    worker_id: str,
+    capabilities: list[str],
+    *,
+    lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+    now: Optional[str] = None,
+) -> Optional[ClaimedJob]:
+    """Atomically claim the next eligible QUEUED job this worker can run.
+
+    Eligibility (checked inside one ``BEGIN IMMEDIATE`` transaction):
+      - state == QUEUED
+      - retry deadline reached: ``next_retry_at`` is NULL or <= now
+      - required_capabilities ⊆ worker capabilities (exact names; empty = generic)
+    Ordering: priority DESC, enqueued_at ASC, job_id ASC (deterministic v1).
+
+    On success the job is moved QUEUED -> LEASED with a fresh lease token and
+    the lease fields written; the claim event is committed atomically. Returns
+    None when no eligible job exists (including "no matching capability").
+    """
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    worker_id = normalize_identity_component(worker_id)
+    caps = normalize_capabilities(capabilities)
+    lease_expires_at = format_iso(
+        parse_iso(now) + timedelta(seconds=lease_duration_seconds)
+    )
+    lease_token = new_lease_token()
+
+    conn = open_operations_store(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE state = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)
+                ORDER BY priority DESC, enqueued_at ASC, job_id ASC
+                """,
+                (JobState.QUEUED.value, now),
+            ).fetchall()
+            for job in rows:
+                required = _json_loads(job["required_capabilities_json"])
+                if not _capability_match(required, caps):
+                    continue
+                conn.execute(
+                    """
+                    UPDATE jobs SET state=?, lease_owner=?, leased_at=?,
+                        lease_expires_at=?, lease_token=?, updated_at=?
+                    WHERE job_id=?
+                    """,
+                    (
+                        JobState.LEASED.value,
+                        worker_id,
+                        now,
+                        lease_expires_at,
+                        lease_token,
+                        now,
+                        job["job_id"],
+                    ),
+                )
+                _append_event(
+                    conn,
+                    EVENT_JOB_CLAIMED,
+                    timestamp=now,
+                    canonical_id=job["canonical_id"],
+                    job_id=job["job_id"],
+                    pipeline_run_id=job["pipeline_run_id"],
+                    worker_id=worker_id,
+                    from_state=JobState.QUEUED.value,
+                    to_state=JobState.LEASED.value,
+                    message=f"job {job['job_id']} claimed by {worker_id}",
+                    metadata={"lease_expires_at": lease_expires_at},
+                )
+                conn.commit()
+                return _job_to_claimed(
+                    job, worker_id, now, lease_expires_at, lease_token
+                )
+            conn.rollback()
+            return None
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def renew_job_lease(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    *,
+    lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
+    now: Optional[str] = None,
+) -> dict[str, Any]:
+    """Renew the current holder's lease. Requires state ∈ {LEASED, RUNNING} and
+    owner + token match. No audit event per renewal (avoids event-log churn)."""
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    job_id = normalize_identity_component(job_id)
+    worker_id = normalize_identity_component(worker_id)
+    lease_token = normalize_identity_component(lease_token)
+    lease_expires_at = format_iso(
+        parse_iso(now) + timedelta(seconds=lease_duration_seconds)
+    )
+
+    conn = open_operations_store(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = _load_job_or_none(conn, job_id)
+            if job is None:
+                conn.rollback()
+                raise OperationsIntegrityError(f"job {job_id} not found")
+            _check_lease_holder(conn, job, worker_id, lease_token)
+            conn.execute(
+                """
+                UPDATE jobs SET lease_expires_at=?, updated_at=? WHERE job_id=?
+                """,
+                (lease_expires_at, now, job_id),
+            )
+            conn.commit()
+            return _row_dict(
+                conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            )
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def start_claimed_job(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    *,
+    now: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Atomically start a claimed job: LEASED -> RUNNING and create attempt #n.
+
+    The attempt is created in the SAME transaction as the RUNNING transition,
+    so attempt accounting reflects "entered RUNNING" (a crash right after start
+    already consumed one attempt). Caller must hold the current lease token.
+    """
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    job_id = normalize_identity_component(job_id)
+    worker_id = normalize_identity_component(worker_id)
+    lease_token = normalize_identity_component(lease_token)
+
+    conn = open_operations_store(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = _load_job_or_none(conn, job_id)
+            if job is None:
+                conn.rollback()
+                raise OperationsIntegrityError(f"job {job_id} not found")
+            _check_lease_holder(conn, job, worker_id, lease_token)
+            if job["state"] != JobState.LEASED.value:
+                conn.rollback()
+                raise OperationsStateError(
+                    f"cannot start job {job_id} from {job['state']} (expected LEASED)"
+                )
+            if job["lease_expires_at"] is not None and job["lease_expires_at"] <= now:
+                conn.rollback()
+                raise StaleLeaseError(
+                    f"job {job_id} lease expired at {job['lease_expires_at']}"
+                )
+
+            from_state = job["state"]
+            conn.execute(
+                """
+                UPDATE jobs SET state=?, updated_at=? WHERE job_id=?
+                """,
+                (JobState.RUNNING.value, now, job_id),
+            )
+            _append_event(
+                conn,
+                EVENT_JOB_STATE_TRANSITION,
+                timestamp=now,
+                canonical_id=job["canonical_id"],
+                job_id=job_id,
+                pipeline_run_id=job["pipeline_run_id"],
+                worker_id=worker_id,
+                from_state=from_state,
+                to_state=JobState.RUNNING.value,
+                message=f"job {job_id} LEASED -> RUNNING",
+            )
+
+            last = conn.execute(
+                "SELECT MAX(attempt_number) AS n FROM job_attempts WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            attempt_number = (last["n"] or 0) + 1
+            attempt_id = _attempt_id(job_id, attempt_number)
+            conn.execute(
+                """
+                INSERT INTO job_attempts(
+                    attempt_id, job_id, attempt_number, worker_id, started_at,
+                    finished_at, outcome, error_class, error_message, retryable,
+                    metadata_json
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)
+                """,
+                (
+                    attempt_id,
+                    job_id,
+                    attempt_number,
+                    worker_id,
+                    now,
+                    _json_dumps(metadata or {}),
+                ),
+            )
+            conn.execute(
+                "UPDATE jobs SET attempt_count=?, updated_at=? WHERE job_id=?",
+                (attempt_number, now, job_id),
+            )
+            _append_event(
+                conn,
+                EVENT_ATTEMPT_BEGUN,
+                timestamp=now,
+                canonical_id=job["canonical_id"],
+                job_id=job_id,
+                pipeline_run_id=job["pipeline_run_id"],
+                worker_id=worker_id,
+                message=f"attempt {attempt_number} begun for job {job_id}",
+                metadata={"attempt_number": attempt_number, "worker_id": worker_id},
+            )
+            conn.commit()
+            return _row_dict(
+                conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            )
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def _active_attempt(conn: sqlite3.Connection, job_id: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM job_attempts
+        WHERE job_id=? AND finished_at IS NULL
+        ORDER BY attempt_number DESC LIMIT 1
+        """,
+        (job_id,),
+    ).fetchone()
+
+
+def _complete_with_attempt_outcome(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    *,
+    outcome: str,
+    retryable: bool,
+    error_class: Optional[str] = None,
+    error_message: Optional[str] = None,
+    now: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Shared completion primitive: finish the active attempt and drive the job
+    terminal/retryable state atomically. Token is the fence; stale token can
+    never commit a completion."""
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    job_id = normalize_identity_component(job_id)
+    worker_id = normalize_identity_component(worker_id)
+    lease_token = normalize_identity_component(lease_token)
+
+    conn = open_operations_store(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job = _load_job_or_none(conn, job_id)
+            if job is None:
+                conn.rollback()
+                raise OperationsIntegrityError(f"job {job_id} not found")
+            _check_lease_holder(conn, job, worker_id, lease_token)
+            if job["state"] != JobState.RUNNING.value:
+                conn.rollback()
+                raise OperationsStateError(
+                    f"cannot complete job {job_id} from {job['state']} "
+                    f"(expected RUNNING)"
+                )
+            attempt = _active_attempt(conn, job_id)
+            if attempt is None:
+                conn.rollback()
+                raise OperationsStateError(
+                    f"job {job_id} RUNNING without an active attempt"
+                )
+
+            conn.execute(
+                """
+                UPDATE job_attempts SET finished_at=?, outcome=?, error_class=?,
+                    error_message=?, retryable=?, metadata_json=?
+                WHERE attempt_id=?
+                """,
+                (
+                    now,
+                    outcome,
+                    error_class,
+                    error_message,
+                    int(bool(retryable)),
+                    _json_dumps(metadata or {}),
+                    attempt["attempt_id"],
+                ),
+            )
+
+            if outcome == "succeeded":
+                to_state = JobState.SUCCEEDED.value
+                next_retry_at = None
+            elif retryable and attempt["attempt_number"] < job["max_attempts"]:
+                to_state = JobState.FAILED_RETRYABLE.value
+                next_retry_at = compute_next_retry_at(now, attempt["attempt_number"])
+            else:
+                to_state = JobState.FAILED_TERMINAL.value
+                next_retry_at = None
+
+            _write_job_state(
+                conn,
+                job,
+                to_state,
+                now=now,
+                reason=(
+                    f"attempt {attempt['attempt_number']} {outcome}"
+                    + (
+                        " (retryable)"
+                        if retryable and to_state == JobState.FAILED_RETRYABLE.value
+                        else ""
+                    )
+                ),
+                next_retry_at=next_retry_at,
+                lease_cleared=(
+                    to_state in TERMINAL_JOB_STATES
+                    or to_state == JobState.FAILED_RETRYABLE.value
+                ),
+                metadata={
+                    "attempt_number": attempt["attempt_number"],
+                    "outcome": outcome,
+                    "retryable": bool(retryable),
+                    "error_class": error_class,
+                },
+            )
+            _append_event(
+                conn,
+                EVENT_ATTEMPT_FINISHED,
+                timestamp=now,
+                canonical_id=job["canonical_id"],
+                job_id=job_id,
+                pipeline_run_id=job["pipeline_run_id"],
+                worker_id=worker_id,
+                to_state=to_state,
+                message=(
+                    f"attempt {attempt['attempt_number']} finished for job "
+                    f"{job_id} -> {to_state}"
+                ),
+                metadata={
+                    "attempt_number": attempt["attempt_number"],
+                    "outcome": outcome,
+                    "retryable": bool(retryable),
+                    "error_class": error_class,
+                },
+            )
+            conn.commit()
+            return _row_dict(
+                conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            )
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def complete_job_success(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    *,
+    now: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Commit a successful execution. Requires RUNNING + current lease token."""
+    return _complete_with_attempt_outcome(
+        db_path,
+        job_id,
+        worker_id,
+        lease_token,
+        outcome="succeeded",
+        retryable=False,
+        now=now,
+        metadata=metadata,
+    )
+
+
+def complete_job_retryable_failure(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    *,
+    error_class: Optional[str] = None,
+    error_message: Optional[str] = None,
+    now: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Report a retryable failure; store/protocol decides FAILED_RETRYABLE vs
+    FAILED_TERMINAL from attempt_count/max_attempts. Requires RUNNING + token."""
+    return _complete_with_attempt_outcome(
+        db_path,
+        job_id,
+        worker_id,
+        lease_token,
+        outcome="failed",
+        retryable=True,
+        error_class=error_class,
+        error_message=error_message,
+        now=now,
+        metadata=metadata,
+    )
+
+
+def complete_job_terminal_failure(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+    *,
+    error_class: Optional[str] = None,
+    error_message: Optional[str] = None,
+    now: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Report a terminal failure. Requires RUNNING + current lease token."""
+    return _complete_with_attempt_outcome(
+        db_path,
+        job_id,
+        worker_id,
+        lease_token,
+        outcome="failed",
+        retryable=False,
+        error_class=error_class,
+        error_message=error_message,
+        now=now,
+        metadata=metadata,
+    )
+
+
+def recover_expired_leases(
+    db_path: Path, *, now: Optional[str] = None
+) -> dict[str, Any]:
+    """Control-plane recovery of every job whose lease has expired.
+
+    - LEASED (claimed but not started): -> QUEUED, clear lease, no attempt
+      consumed, ``LEASE_EXPIRED_REQUEUED`` event.
+    - RUNNING (worker vanished mid-execution): close the active attempt as a
+      lease-expired retryable failure (the attempt counts), then the job follows
+      the frozen recovery policy: attempt < max -> FAILED_RETRYABLE with backoff
+      (never immediately reclaimed — avoids crash loops); exhausted ->
+      FAILED_TERMINAL.
+    """
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    recovered_leased: list[str] = []
+    recovered_running: list[str] = []
+    terminal: list[str] = []
+
+    conn = open_operations_store(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE state IN (?, ?) AND lease_expires_at IS NOT NULL
+                    AND lease_expires_at <= ?
+                ORDER BY job_id ASC
+                """,
+                (JobState.LEASED.value, JobState.RUNNING.value, now),
+            ).fetchall()
+            for job in rows:
+                jid = job["job_id"]
+                if job["state"] == JobState.LEASED.value:
+                    _write_job_state(
+                        conn,
+                        job,
+                        JobState.QUEUED.value,
+                        now=now,
+                        reason="lease expired before start",
+                        lease_cleared=True,
+                    )
+                    _append_event(
+                        conn,
+                        EVENT_LEASE_EXPIRED_REQUEUED,
+                        timestamp=now,
+                        canonical_id=job["canonical_id"],
+                        job_id=jid,
+                        pipeline_run_id=job["pipeline_run_id"],
+                        worker_id=job["lease_owner"],
+                        from_state=JobState.LEASED.value,
+                        to_state=JobState.QUEUED.value,
+                        message=f"job {jid} lease expired before start; requeued",
+                    )
+                    recovered_leased.append(jid)
+                    continue
+
+                # RUNNING: close active attempt as lease-expired retryable.
+                attempt = _active_attempt(conn, jid)
+                if attempt is None:
+                    _write_job_state(
+                        conn,
+                        job,
+                        JobState.FAILED_RETRYABLE.value,
+                        now=now,
+                        reason="lease expired with no active attempt",
+                        next_retry_at=compute_next_retry_at(now, job["attempt_count"] + 1),
+                        lease_cleared=True,
+                    )
+                    _append_event(
+                        conn,
+                        EVENT_LEASE_EXPIRED_REQUEUED,
+                        timestamp=now,
+                        canonical_id=job["canonical_id"],
+                        job_id=jid,
+                        pipeline_run_id=job["pipeline_run_id"],
+                        worker_id=job["lease_owner"],
+                        from_state=JobState.RUNNING.value,
+                        to_state=JobState.FAILED_RETRYABLE.value,
+                        message=f"job {jid} lease expired without active attempt",
+                    )
+                    recovered_running.append(jid)
+                    continue
+
+                conn.execute(
+                    """
+                    UPDATE job_attempts SET finished_at=?, outcome='failed',
+                        error_class='WorkerLeaseExpired',
+                        error_message='worker lease expired while running',
+                        retryable=1 WHERE attempt_id=?
+                    """,
+                    (now, attempt["attempt_id"]),
+                )
+                attempt_no = attempt["attempt_number"]
+                if attempt_no < job["max_attempts"]:
+                    to_state = JobState.FAILED_RETRYABLE.value
+                    next_retry_at = compute_next_retry_at(now, attempt_no)
+                    recovered_running.append(jid)
+                else:
+                    to_state = JobState.FAILED_TERMINAL.value
+                    next_retry_at = None
+                    terminal.append(jid)
+                _write_job_state(
+                    conn,
+                    job,
+                    to_state,
+                    now=now,
+                    reason=f"lease expired during attempt {attempt_no}",
+                    next_retry_at=next_retry_at,
+                    lease_cleared=True,
+                )
+                _append_event(
+                    conn,
+                    EVENT_ATTEMPT_CLOSED_EXPIRED,
+                    timestamp=now,
+                    canonical_id=job["canonical_id"],
+                    job_id=jid,
+                    pipeline_run_id=job["pipeline_run_id"],
+                    worker_id=job["lease_owner"],
+                    from_state=JobState.RUNNING.value,
+                    to_state=to_state,
+                    message=(
+                        f"attempt {attempt_no} closed as lease-expired -> {to_state}"
+                    ),
+                    metadata={"attempt_number": attempt_no},
+                )
+            conn.commit()
+            return {
+                "recovered_leased": recovered_leased,
+                "recovered_running": recovered_running,
+                "terminal": terminal,
+            }
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def is_worker_stale(
+    db_path: Path,
+    worker_id: str,
+    *,
+    stale_threshold_seconds: int = DEFAULT_WORKER_STALE_THRESHOLD_SECONDS,
+    now: Optional[str] = None,
+) -> bool:
+    """Derived staleness from last_heartbeat_at + threshold. Never relies on the
+    human ``status`` field alone. A worker that never heartbeated is stale."""
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    worker_id = normalize_identity_component(worker_id)
+    conn = open_operations_store(db_path)
+    try:
+        row = conn.execute(
+            "SELECT last_heartbeat_at FROM workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return True
+    if row["last_heartbeat_at"] is None:
+        return True
+    cutoff = format_iso(
+        parse_iso(now) - timedelta(seconds=stale_threshold_seconds)
+    )
+    return row["last_heartbeat_at"] < cutoff
+
+
+def list_workers_with_status(
+    db_path: Path,
+    *,
+    stale_threshold_seconds: int = DEFAULT_WORKER_STALE_THRESHOLD_SECONDS,
+    now: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """list_workers() plus a derived ``derived_status`` (active|stale) computed
+    from last_heartbeat_at + threshold. Worker staleness never mutates jobs."""
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    workers = list_workers(db_path)
+    for worker in workers:
+        worker["derived_status"] = (
+            "stale"
+            if is_worker_stale(
+                db_path,
+                worker["worker_id"],
+                stale_threshold_seconds=stale_threshold_seconds,
+                now=now,
+            )
+            else "active"
+        )
+    return workers
+
+
+# ----------------------------------------------------------------------
 # Event log reads
 # ----------------------------------------------------------------------
 
@@ -2001,6 +2754,14 @@ def validate_operations_store(
                     violations.append(
                         f"job {jid} in {job['state']} without active lease"
                     )
+                if (
+                    job["leased_at"] is None
+                    or job["lease_token"] is None
+                ):
+                    violations.append(
+                        f"job {jid} in {job['state']} with incomplete lease "
+                        f"(leased_at/lease_token required)"
+                    )
             else:
                 if (
                     job["lease_owner"] is not None
@@ -2010,6 +2771,48 @@ def validate_operations_store(
                 ):
                     violations.append(
                         f"job {jid} has residual lease fields in state {job['state']}"
+                    )
+
+            # Required-capabilities JSON validity (M6-02 capability dispatch)
+            try:
+                required = _json_loads(job["required_capabilities_json"])
+                if not isinstance(required, list) or not all(
+                    isinstance(c, str) for c in required
+                ):
+                    violations.append(
+                        f"job {jid} required_capabilities_json is not a list of strings"
+                    )
+                else:
+                    for cap in required:
+                        if cap not in VALID_CAPABILITIES:
+                            violations.append(
+                                f"job {jid} invalid required capability {cap!r}"
+                            )
+            except Exception:
+                violations.append(
+                    f"job {jid} required_capabilities_json not valid JSON"
+                )
+
+            # Active-attempt invariant (M6-02):
+            #   RUNNING   -> exactly one unfinished attempt
+            #   non-RUNNING -> zero unfinished attempts
+            active_attempts = conn.execute(
+                "SELECT attempt_number FROM job_attempts "
+                "WHERE job_id=? AND finished_at IS NULL",
+                (jid,),
+            ).fetchall()
+            active_n = len(active_attempts)
+            if job["state"] == JobState.RUNNING.value:
+                if active_n != 1:
+                    violations.append(
+                        f"job {jid} RUNNING must have exactly one active attempt "
+                        f"(found {active_n})"
+                    )
+            else:
+                if active_n != 0:
+                    violations.append(
+                        f"job {jid} in {job['state']} must have no active attempt "
+                        f"(found {active_n})"
                     )
 
             # Attempt numbering + consistency
@@ -2070,6 +2873,39 @@ def validate_operations_store(
                     f"{ev['canonical_id']}"
                 )
         checks["event_reference_violations"] = bad_event_refs
+
+        # Worker capability JSON validity (M6-02 capability dispatch)
+        workers = conn.execute(
+            "SELECT worker_id, capabilities_json FROM workers"
+        ).fetchall()
+        bad_worker_caps = 0
+        for wrow in workers:
+            try:
+                caps = _json_loads(wrow["capabilities_json"])
+                if not isinstance(caps, list) or not all(
+                    isinstance(c, str) for c in caps
+                ):
+                    violations.append(
+                        f"worker {wrow['worker_id']} capabilities_json is not "
+                        "a list of strings"
+                    )
+                    bad_worker_caps += 1
+                else:
+                    for cap in caps:
+                        if cap not in VALID_CAPABILITIES:
+                            violations.append(
+                                f"worker {wrow['worker_id']} invalid capability "
+                                f"{cap!r}"
+                            )
+                            bad_worker_caps += 1
+            except Exception:
+                violations.append(
+                    f"worker {wrow['worker_id']} capabilities_json not valid JSON"
+                )
+                bad_worker_caps += 1
+        checks["worker_capability_json_valid"] = bad_worker_caps == 0
+        checks["active_attempt_invariant_valid"] = True
+        checks["required_capability_json_valid"] = True
 
         checks["schema_version"] = schema_version
         checks["policy_version"] = policy_version

@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 .. M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 .. M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -130,3 +130,27 @@
 - **Context**: M6-00 frozen the admin operation `cancel job`, but the frozen job lifecycle (`QUEUED → LEASED → RUNNING → SUCCEEDED | FAILED_RETRYABLE | FAILED_TERMINAL`) had no way to distinguish "admin cancelled" from "terminal failure". Without `CANCELLED`, cancelled jobs are indistinguishable from `FAILED_TERMINAL`.
 - **Decision**: Add the single additive job state `CANCELLED` to the frozen job lifecycle. It is **terminal**, never auto-retryable, and cannot be requeued/claimed. Legal entries: `QUEUED → CANCELLED` and `FAILED_RETRYABLE → CANCELLED`. Cancelling a `LEASED`/`RUNNING`/already-terminal job is a deterministic no-op (frozen and tested). No other lifecycle state is added or renamed; in particular M6 does **not** add `FAILED_PC_OFFLINE` or `WAITING_FOR_PC` (per Decision 11, a job waiting for a matching capability worker simply stays `QUEUED`).
 - **Status**: FROZEN (implemented + tested in M6-01).
+
+---
+
+## Decision 22: At-Least-Once Execution with Lease Fencing (M6-02)
+- **Context**: M6 must execute jobs exactly once if possible, but a worker can complete external side effects and then crash before committing `SUCCEEDED`.
+- **Decision**: M6 v1 provides **at-least-once** execution semantics via durable queue + atomic claim + lease + fencing token + idempotent stage execution. Exactly-once is **not** claimed; the residual risk (external side effect done, `SUCCEEDED` not committed) is resolved in M6-03 by per-stage **artifact idempotency** (stage success = artifact invariant, never exit code). Duplicate execution is minimized but not theoretically impossible.
+
+---
+
+## Decision 23: Lease Token Is a Fencing Token (M6-02)
+- **Context**: Two workers can hold overlapping ownership of one job across crash/reclaim cycles. Checking only `lease_owner == worker_id` is unsafe because one worker process may legitimately re-claim the same job later.
+- **Decision**: Every successful claim generates a fresh `lease_token` (`lease_<random>`). Every ownership mutation (renew, start, complete success/retryable/terminal) must submit `(job_id, worker_id, lease_token)`. If the token is not the DB's current token, the mutation is rejected with `StaleLeaseError`. Tokens do not participate in logical job identity; they are execution credentials. Tokens live in the jobs row only and are never copied into event messages or human logs; `ClaimedJob.to_public_dict()`/`repr()` hide them.
+
+---
+
+## Decision 24: Capability Dispatch Is Exact All-Of Matching (M6-02)
+- **Context**: M6-00 froze the capability vocabulary but the M6-01 `jobs` schema had no persistent capability field, so capability-aware claim was unimplementable.
+- **Decision**: Additive schema correction: `jobs.required_capabilities_json` (`[]` default) while keeping `operations-store-v1` (no migration engine; no production DB existed, so create-schema + validation + tests updated; old dev DBs require rebuild). Claim matches iff `required_capabilities ⊆ worker.capabilities`; empty requirement = generic/control-plane executable. Matching is exact capability name only — no fuzzy/prefix/machine-name routing (hostname is metadata, never routing).
+
+---
+
+## Decision 25: Lease Semantics and Stale Worker Behavior (M6-02)
+- **Context**: Lease expiry recovery must distinguish "claimed but never started" from "executing when worker vanished", and a stale worker must not directly fail jobs.
+- **Decision**: Lease duration defaults to 120 s (configurable, injected clock). `LEASED`-before-start expiry requeues to `QUEUED` without consuming an attempt. `RUNNING` expiry closes the active attempt as `lease_expired`/`WorkerLeaseExpired` (retryable), applies backoff via `next_retry_at` (never immediate reclaim), and transitions to `FAILED_RETRYABLE` (or `FAILED_TERMINAL` on exhaustion). Worker staleness is derived from `last_heartbeat_at` + threshold and never directly fails jobs — job ownership is decided only by lease expiry. Worker heartbeat and job lease renewal are distinct concepts: heartbeat keeps the worker row alive; an active job lease must be explicitly renewed.

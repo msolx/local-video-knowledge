@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02..M6-09 TODO.
+> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03..M6-09 TODO.
 
 ---
 
@@ -10,7 +10,7 @@
 |---|---|---|
 | M6-00 | DONE | `docs/M6_OPERATIONS_ARCHITECTURE.md`, `docs/M6_DECISIONS.md`, `docs/M6_TASKS.md`, `docs/M6_HANDOFF.md` |
 | M6-01 | DONE | `src/operations/` durable store + job state machine, `tests/test_operations_store.py` |
-| M6-02 | TODO | Local Worker Runtime + Capability/Lease Protocol |
+| M6-02 | DONE | Local Worker Runtime + Capability/Lease Protocol |
 | M6-03 | TODO | Pipeline Stage Adapters for M2→M5 |
 | M6-04 | TODO | Scheduler + Automatic Downstream Orchestration |
 | M6-05 | TODO | Crash Recovery / Retry / Observability |
@@ -60,7 +60,7 @@ Create `data/operations/operations.sqlite3` (logical path `ops.db_path`) with th
 
 ---
 
-## M6-02: Local Worker Runtime + Capability/Lease Protocol (`TODO`)
+## M6-02: Local Worker Runtime + Capability/Lease Protocol (`DONE`)
 
 ### Objective
 Worker process that heartbeats capability set, claims jobs via leases, refreshes lease, releases/requeues on completion/crash.
@@ -70,6 +70,23 @@ Worker process that heartbeats capability set, claims jobs via leases, refreshes
 - PC offline = worker simply stops heartbeating; GPU jobs wait (never FAILED).
 - GPU single-heavy-job rule enforced here (capability semaphore).
 - Machine name is metadata.
+
+### Delivered
+- `src/operations/models.py` extensions: `VALID_CAPABILITIES` (frozen 7-capability vocabulary), `normalize_capability`/`normalize_capabilities` (exact, order-preserving dedup), `new_lease_token` (`lease_<secrets.token_hex(16)>`), frozen `ClaimedJob` dataclass (job identity + stage + asset identity + `input_fingerprint` + required capabilities + lease fields) whose `lease_token` is a private attribute exposed only via property — hidden from `repr()` and `to_public_dict()`.
+- `src/operations/store.py` protocol layer (M6-01 primitives reused; no sealed semantics rewritten):
+  - **Atomic claim** `claim_next_job(db, worker_id, capabilities, *, lease_duration_seconds=120, now)`: `BEGIN IMMEDIATE`, single transaction = select eligible `QUEUED` job (retry time respected, `next_retry_at IS NULL OR <= now`), capability all-of subset check, fresh lease token, `QUEUED→LEASED` + lease fields, `job_claimed` event, commit. Concurrency-safe (single winner).
+  - **Claim ordering** (frozen deterministic v1): `priority DESC, enqueued_at ASC, job_id ASC`.
+  - **Renewal** `renew_job_lease`: `LEASED`/`RUNNING` + owner/token match only, extends `lease_expires_at`, no per-renew event.
+  - **Start** `start_claimed_job`: atomic `LEASED→RUNNING` + attempt creation (monotonic `attempt_number`) + `attempt_count` update in the same transaction; attempt is counted at start, so a crash after start consumes an attempt (see Decision 26).
+  - **Completions** `complete_job_success` / `complete_job_retryable_failure` / `complete_job_terminal_failure` via shared `_complete_with_attempt_outcome`: fence on token, finish active attempt (outcome/error_class/error_message/metadata persisted), state decided by the store (`SUCCEEDED` / `FAILED_RETRYABLE`+backoff / `FAILED_TERMINAL` on exhaustion), lease cleared for non-running outcomes. Stale/old tokens never commit success.
+  - **Expired-lease recovery** `recover_expired_leases(now)`: `LEASED`→`QUEUED` (no attempt consumed, `lease_expired_requeued` event); `RUNNING`→close active attempt as `lease_expired`/`WorkerLeaseExpired` retryable (attempt counts), `FAILED_RETRYABLE`+backoff (never immediate reclaim) or `FAILED_TERMINAL` on exhaustion.
+  - **Heartbeat/staleness** `worker_heartbeat` (M6-01) + `is_worker_stale`/`list_workers_with_status` (derived from `last_heartbeat_at` + `stale_threshold_seconds=120`; staleness never directly fails jobs).
+  - `StaleLeaseError` for any ownership mutation whose token is not the current DB token (fencing).
+- `src/operations/worker.py` — generic `WorkerRuntime`: `register()`/`heartbeat()`, `run_once()` (heartbeat → claim → start → injected stage handler → complete; `RetryableJobError`→retryable, `TerminalJobError`→terminal, unknown `Exception`→retryable until `max_attempts`), handler registry keyed by stage, lightweight daemon heartbeat thread for long-running handlers (worker heartbeat + active-job lease renewal), `lease_lost` detection (fenced completions never committed), graceful `stop()` (no complex process kill), `run_forever(max_cycles=None)`. No M2–M5 imports; handlers are injected callables (M6-03 provides real adapters).
+- Additive schema correction: `jobs.required_capabilities_json` (Decision 24) — `operations-store-v1` retained, no migration engine, old dev DBs require rebuild, production DB not created.
+- `validate_operations_store` extended: active-attempt invariant (RUNNING ⇒ exactly 1 active attempt; non-RUNNING ⇒ 0), lease completeness (LEASED/RUNNING require full lease; non-leased states require none), capability JSON validity for workers and jobs.
+- `tests/test_operations_worker.py` — 60 tests (registration, capabilities, atomic claim, ordering, capability matching, nonmatching stays QUEUED, lease fields, unique token, renewal, wrong-owner/stale-token rejection, start valid/stale, attempt-on-start, single active attempt, success/retryable/terminal completion, stale success/failure rejection, LEASED-before-start expiry no attempt, RUNNING expiry closes attempt + retryable + backoff + exhaustion terminal, heartbeat, worker stale derived status, stale worker doesn't fail job, two-worker concurrent claim single winner, reclaim after expiry, stale fencing after reclaim, WorkerRuntime idle/success/retryable/terminal/unknown-exception, handler registry, long-handler renewal design, graceful shutdown, token hidden from repr/log, validation invariants, full synthetic crash/recovery flow).
+- Real verification: targeted `pytest tests/test_operations_store.py tests/test_operations_worker.py` = 136 passed; full `pytest tests -q` = 1401 passed / 10 skipped. No production `data/operations/operations.sqlite3`; no LLM/GPU/network; M2–M5 untouched.
 
 ---
 

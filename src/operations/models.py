@@ -32,6 +32,20 @@ OPERATIONS_POLICY_VERSION = "operations-policy-v1"
 OPERATIONS_USER_VERSION = 1
 DEFAULT_OPERATIONS_PATH = "data/operations/operations.sqlite3"
 
+# Frozen M6-00 capability vocabulary (Decision 8 / architecture §12). Exact-name
+# matching only; empty requirement = generic control-plane job.
+VALID_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        "collector",
+        "downloader",
+        "cpu_media",
+        "gpu_asr",
+        "gpu_vlm",
+        "llm_extraction",
+        "store_ingest",
+    }
+)
+
 # ----------------------------------------------------------------------
 # Enums
 # ----------------------------------------------------------------------
@@ -178,6 +192,25 @@ def normalize_job_stage(value: str) -> str:
     return stage
 
 
+def normalize_capability(value: str) -> str:
+    cap = normalize_identity_component(value)
+    if cap not in VALID_CAPABILITIES:
+        raise ValueError(f"unknown capability: {value!r}")
+    return cap
+
+
+def normalize_capabilities(values) -> list[str]:
+    """Normalize + validate an ordered capability list (deduped, order preserved)."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        cap = normalize_capability(value)
+        if cap not in seen:
+            seen.add(cap)
+            result.append(cap)
+    return result
+
+
 # ----------------------------------------------------------------------
 # Deterministic job identity
 # ----------------------------------------------------------------------
@@ -244,6 +277,17 @@ def compute_next_retry_at(now_iso: str, attempt_number: int, *, base_seconds: in
     return format_iso(parse_iso(now_iso) + timedelta(seconds=compute_backoff_seconds(attempt_number, base_seconds, cap_seconds)))
 
 
+def new_lease_token() -> str:
+    """Cryptographically random fencing token for a job claim (``lease_<hex>``).
+
+    A fresh token is generated on every successful claim; it participates in
+    every execution-ownership mutation and is never part of logical job identity.
+    """
+    import secrets
+
+    return "lease_" + secrets.token_hex(16)
+
+
 # ----------------------------------------------------------------------
 # Result models
 # ----------------------------------------------------------------------
@@ -277,3 +321,52 @@ class OperationsValidationResult:
     counts: dict[str, int]
     checks: dict[str, Any]
     violations: list[str]
+
+
+@dataclass(frozen=True)
+class ClaimedJob:
+    """Result of an atomic capability-aware claim (M6-02).
+
+    Contains the job identity plus the execution-ownership lease for the current
+    claim. ``lease_token`` is the fencing token for this execution generation —
+    it is excluded from ``repr()`` and from the public/JSON serialization so it
+    is never accidentally logged.
+    """
+
+    job_id: str
+    stage: str
+    canonical_id: str
+    platform: str
+    platform_content_id: str
+    input_fingerprint: str
+    required_capabilities: frozenset[str]
+    lease_owner: str
+    leased_at: str
+    lease_expires_at: str
+    _lease_token: str
+
+    @property
+    def lease_token(self) -> str:
+        return self._lease_token
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """JSON/log-safe serialization — never includes the lease token."""
+        return {
+            "job_id": self.job_id,
+            "stage": self.stage,
+            "canonical_id": self.canonical_id,
+            "platform": self.platform,
+            "platform_content_id": self.platform_content_id,
+            "input_fingerprint": self.input_fingerprint,
+            "required_capabilities": sorted(self.required_capabilities),
+            "lease_owner": self.lease_owner,
+            "leased_at": self.leased_at,
+            "lease_expires_at": self.lease_expires_at,
+        }
+
+    def __repr__(self) -> str:
+        # Explicit repr that hides the fencing token.
+        return (
+            f"ClaimedJob(job_id={self.job_id!r}, stage={self.stage!r}, "
+            f"canonical_id={self.canonical_id!r}, lease_expires_at={self.lease_expires_at!r})"
+        )

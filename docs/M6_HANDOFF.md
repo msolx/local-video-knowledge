@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`; `M6-02 = NEXT`; `M6-03..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`; `M6-03 = NEXT`; `M6-04..M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -77,18 +77,29 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ---
 
+## 5b. M6-02 Deliverables Completed
+
+- `src/operations/models.py` extensions — `VALID_CAPABILITIES` (frozen: `collector`, `downloader`, `cpu_media`, `gpu_asr`, `gpu_vlm`, `llm_extraction`, `store_ingest`), `normalize_capability`/`normalize_capabilities`, `new_lease_token`, frozen `ClaimedJob` (token hidden from `repr`/`to_public_dict`).
+- `src/operations/store.py` protocol layer — atomic `claim_next_job` (BEGIN IMMEDIATE; ordering `priority DESC, enqueued_at ASC, job_id ASC`; capability all-of subset; fresh token; `QUEUED→LEASED`), `renew_job_lease`, `start_claimed_job` (LEASED→RUNNING + attempt created + counted in same txn), `complete_job_success`/`complete_job_retryable_failure`/`complete_job_terminal_failure` (token-fenced shared completion; store decides final state incl. exhaustion), `recover_expired_leases` (LEASED→QUEUED no attempt; RUNNING→closed attempt retryable + backoff or terminal), `is_worker_stale`/`list_workers_with_status` (derived from heartbeat + threshold), `StaleLeaseError` fencing. Additive `jobs.required_capabilities_json` (Decision 24; `operations-store-v1` retained). `validate_operations_store` extended (active-attempt invariant, lease completeness, capability JSON validity). Tokens never written to event/log payloads.
+- `src/operations/worker.py` — generic `WorkerRuntime` (register/heartbeat/run_once/run_forever/stop; injected stage-handler registry; `RetryableJobError`/`TerminalJobError`/unknown-Exception policy; daemon heartbeat thread renewing active-job lease for long handlers; `lease_lost` fencing; graceful shutdown). No M2–M5 imports.
+- `src/operations/__init__.py` — new exports (protocol fns, `StaleLeaseError`, `ClaimedJob`, capability helpers, worker runtime types).
+- `tests/test_operations_worker.py` — 60 tests incl. the P0 stale-fencing flow (A claims token A1 → expiry → B claims B1 → all A-side renew/start/success/retryable/terminal rejected; B succeeds), two-worker concurrent claim single-winner, LEASED/RUNNING crash accounting, retry-exhaustion-through-crash, heartbeat/staleness, capability matching, WorkerRuntime behaviors, token-hiding, validation invariants.
+- Verification: targeted `pytest tests/test_operations_store.py tests/test_operations_worker.py` = 136 passed; full `pytest tests -q` = 1401 passed / 10 skipped. No production ops DB; no LLM/GPU/network; M2–M5 untouched.
+
+---
+
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-02 · Worker Runtime + Capability / Lease Protocol**
+**M6-03 — Pipeline Stage Adapters for M2 → M5**
 
-- Objective: implement the worker runtime + the M6-02 capability/lease protocol on top of the M6-01 store primitives.
-- Entry points to reuse: `src/operations/store.py` — `register_worker`, `worker_heartbeat`, `set_job_lease`/`clear_job_lease`, `transition_job_state` (`QUEUED→LEASED` claims, `LEASED→QUEUED` lease-expiry recovery), `begin_attempt`/`finish_attempt`; `src/operations/models.py` enums and `compute_job_id`.
-- Deliverable (subject to M6-02 spec): worker runtime + lease/heartbeat protocol (`src/operations/` additions) + tests.
-- Constraints: do not modify M5 `knowledge_store.sqlite3`; do not modify any M2–M5 sealed module; do not modify M6-01 sealed store semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
-- Commit message: per M6-02 spec.
-- The M6-01 store already persists `lease_owner/leased_at/lease_expires_at/lease_token` and rejects residual lease fields on non-leased states; the concurrent atomic claim algorithm is M6-02's job.
+- Objective: wrap the real M2–M5 stage entry points (table in §4) as stage adapters that plug into the M6-02 `WorkerRuntime` handler registry. Each adapter executes the stage, verifies its artifact invariant (Decision 13 / architecture §17), and raises `RetryableJobError` / `TerminalJobError` accordingly.
+- Reuse: `src/operations/worker.py` (`WorkerRuntime`, `RetryableJobError`, `TerminalJobError`, `HandlerResult`), `src/operations/store.py` (claim/start/complete protocol), the M6-01 store primitives, and the M6-02 lease/fencing contract.
+- Deliverable (subject to M6-03 spec): stage adapters (`src/operations/` additions) + tests; idempotent artifact semantics are the key contract (resolves the at-least-once residual gap of Decision 22).
+- Constraints: never modify M2–M5 sealed modules; never modify M6-01/M6-02 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it; PC-offline stays `QUEUED` (never FAILED).
+- Commit message: per M6-03 spec.
+- M6-02 sealed the capability-worker and lease protocol: atomic claim, fencing token (`StaleLeaseError`), renewal, start-with-attempt, completion protocols, expired-lease recovery (`LEASED`→QUEUED no attempt; `RUNNING`→closed attempt + backoff), worker heartbeat/staleness (derived, never directly fails jobs), and the generic `WorkerRuntime` with injected handlers + long-job lease-renewal thread.
 
-Do not start M6-03 until M6-02 is sealed.
+Do not start M6-04 until M6-03 is sealed.
 
 ---
 
