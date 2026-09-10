@@ -3,6 +3,7 @@
 > **Milestone Target**: Unified, typed, deterministic knowledge extraction from grounded media evidence chunks.  
 > **Working Branch**: `feat/m4-unified-knowledge-model`  
 > **Status Matrix**: M4-00 = `DONE / SEALED` | M4-01 = `DONE / SEALED` | M4-02 = `DONE / SEALED` | M4-03 = `DONE / SEALED` | M4-04 = `DONE` | M4-05 = `DONE` | M4-06 = `DONE`
+> **C10 Historical Fixture Status**: `RECOVERED_WITH_INTERMEDIATE_PROVENANCE_LOSS` (2026-09-10; see `docs/M4_C10_ARTIFACT_INCIDENT_20260910.md`; canonical final preserved, historical M4 intermediate execution artifacts irreversibly lost, M4 code semantics SEALED)
 
 ---
 

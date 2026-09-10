@@ -1,0 +1,52 @@
+{
+  "incident_id": "m4-c10-provenance-incident-20260910",
+  "schema_version": "m4-c10-incident-v1",
+  "status": "RECOVERED_WITH_INTERMEDIATE_PROVENANCE_LOSS",
+  "summary": "The historical M4 raw/candidate/merged/enriched execution artifacts for the two C10 assets were irreversibly overwritten on 2026-09-10 by a test running a destructive KnowledgeExtractAdapter against the live data/processed tree. Canonical final knowledge (knowledge_units.json), M3 evidence, finalization metadata, and the M5 production projection all survived. Exact historical intermediate bytes are permanently lost; the frozen historical source_enriched fingerprint anchors remain valid descriptors of the lost execution generation. A fresh real rerun (Phase-1, LM Studio qwen3-8b) is NOT equivalent to the historical run and was not adopted.",
+  "affected_assets": [
+    {
+      "canonical_id": "douyin_7681603850364521734",
+      "surviving_final": {
+        "knowledge_units_sha256": "255b0a8bc2dfc7d4f8383185687755d56c9f82d57363090ab67dffc066faa93e",
+        "knowledge_finalization_sha256": "74503733d377e7b568132a115dba10eb1fe90aa73a2780b5364dee98dfde5400",
+        "unit_count": 62
+      },
+      "historical_lost_intermediate": {
+        "original_enriched_fingerprint": "0b329ed0fedad69a196d92f3a3febedd3a6faf6d493e5da7675059173adf39e7",
+        "status": "unrecoverable"
+      },
+      "current_noncanonical_reconstruction": {
+        "fingerprint": "e8de8e8d467c9694802d6be8404288f5168e681452a1f8fd8432185bfaabf6de",
+        "status": "forensic_only"
+      },
+      "isolated_real_rerun": {
+        "enriched_fingerprint": "9ca8d6567c088f86d84771c16bfdb617f033836f0816ef17a6d28b57f4598e22",
+        "unit_count": 69,
+        "status": "forensic_only_not_adopted"
+      },
+      "m5_expected_unit_count": 62
+    },
+    {
+      "canonical_id": "douyin_7682038498466993905",
+      "surviving_final": {
+        "knowledge_units_sha256": "361b0e82bb7a7caabf6ccd65bc1a6993893141f735573e200c724c7afe7e79c4",
+        "knowledge_finalization_sha256": "98d8a23dda68df1addae3ca6e6709893e5ba84ba5d6137de97be31cf800c08d8",
+        "unit_count": 6
+      },
+      "historical_lost_intermediate": {
+        "original_enriched_fingerprint": "6687bfd29d8db63657b73766a53c26c79f54201a9cdbffc303ee55c942665f34",
+        "status": "unrecoverable"
+      },
+      "current_noncanonical_reconstruction": {
+        "fingerprint": "7f4c4db8d28b0a4c191ccfe1a08a6266a239cca4e0eb3876e11b811e7d183456",
+        "status": "forensic_only"
+      },
+      "isolated_real_rerun": {
+        "enriched_fingerprint": "7c8d8132362d02118087eb8c4ad23e6d970a8f99c34c07b8a057fbaadda15a32",
+        "unit_count": 6,
+        "status": "forensic_only_not_adopted"
+      },
+      "m5_expected_unit_count": 6
+    }
+  ]
+}

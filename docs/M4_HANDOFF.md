@@ -1,6 +1,7 @@
 # Milestone M4: Unified Knowledge Model · Master Handoff Protocol
 
 > **Milestone Status**: `COMPLETE` (M4-00 = `DONE / SEALED`, M4-01 = `DONE / SEALED`, M4-02 = `DONE / SEALED`, M4-03 = `DONE / SEALED`, M4-04 = `DONE`, M4-05 = `DONE`, M4-06 = `DONE`)
+> **C10 Historical Fixture Status**: `RECOVERED_WITH_INTERMEDIATE_PROVENANCE_LOSS` (2026-09-10 incident; canonical final knowledge preserved, historical M4 intermediate execution artifacts irreversibly lost; see `docs/M4_C10_ARTIFACT_INCIDENT_20260910.md` and `tests/fixtures/m4_c10_incident_20260910.json`; M4 code semantics remain SEALED)
 > **Source Baseline**: Milestone M3 Sealed at Tag `m3-media-integration-complete` (`1f1c3b9a604d2fbdb9bb63606d6392aa893c080e`).  
 > **Working Branch**: `feat/m4-unified-knowledge-model`
 

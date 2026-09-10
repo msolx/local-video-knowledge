@@ -8,6 +8,7 @@ fixtures otherwise. No LLM runtime is started; all checks are deterministic.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import unicodedata
 from pathlib import Path
@@ -43,6 +44,14 @@ from src.knowledge.render import (
 ROOT = Path(__file__).resolve().parents[1]
 VIDEO_ASSET = "douyin_7681603850364521734"
 ALBUM_ASSET = "douyin_7682038498466993905"
+
+INCIDENT_FIXTURE = ROOT / "tests" / "fixtures" / "m4_c10_incident_20260910.json"
+INCIDENT_STATUS = "RECOVERED_WITH_INTERMEDIATE_PROVENANCE_LOSS"
+
+# Historical frozen source_enriched anchors. These describe the ORIGINAL, now-lost
+# execution generation. They are never overwritten and never re-anchored.
+VIDEO_HISTORICAL_ENRICHED_ANCHOR = "0b329ed0fedad69a196d92f3a3febedd3a6faf6d493e5da7675059173adf39e7"
+ALBUM_HISTORICAL_ENRICHED_ANCHOR = "6687bfd29d8db63657b73766a53c26c79f54201a9cdbffc303ee55c942665f34"
 
 PERCEPTUAL_MODALITIES = {"visual_text", "visual_description", "perceptual_metric"}
 
@@ -84,6 +93,24 @@ def _load_asset(asset_id: str) -> dict[str, Any]:
         "finalization": _load_json(kdir / "knowledge_finalization.json"),
         "markdown": (kdir / "knowledge.md").read_text(encoding="utf-8"),
     }
+
+
+def _load_incident_manifest() -> dict[str, Any]:
+    return _load_json(INCIDENT_FIXTURE)
+
+
+def _incident_asset_entry(incident: dict[str, Any], asset_id: str) -> dict[str, Any]:
+    assert incident["incident_id"] == "m4-c10-provenance-incident-20260910"
+    assert incident["schema_version"] == "m4-c10-incident-v1"
+    assert incident["status"] == INCIDENT_STATUS
+    for entry in incident["affected_assets"]:
+        if entry["canonical_id"] == asset_id:
+            return entry
+    raise AssertionError(f"asset {asset_id} not present in incident manifest")
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 # ----------------------------------------------------------------------
@@ -453,34 +480,58 @@ def test_tampered_excerpt_breaks_grounding():
 # ----------------------------------------------------------------------
 
 def test_real_c10_video_full_chain_audit():
+    """Recovery contract: incident-aware audit for the provenance-loss asset.
+
+    The historical M4 intermediate bytes for this C10 asset were irreversibly
+    lost (see tests/fixtures/m4_c10_incident_20260910.json). This test no longer
+    requires the on-disk enriched bytes to reproduce the historical generation.
+    Instead it verifies the surviving canonical final, the preserved historical
+    anchors, incident attestation, M3 evidence, and that reconstructed/rerun
+    artifacts are not claimed as originals.
+    """
     asset = _load_asset(VIDEO_ASSET)
-    assert asset["manifest"]["manifest_fingerprint"]
-    candidates = asset["candidates"]
-    merged = asset["merged"]
-    enriched = asset["enriched"]
+    incident = _load_incident_manifest()
+    entry = _incident_asset_entry(incident, VIDEO_ASSET)
+
+    # incident attestation: status + surviving final hash + unit count
+    assert entry["surviving_final"]["unit_count"] == 62
+    kdir = ROOT / "data" / "processed" / VIDEO_ASSET / "knowledge"
+    assert _sha256(kdir / "knowledge_units.json") == entry["surviving_final"]["knowledge_units_sha256"]
+    assert _sha256(kdir / "knowledge_finalization.json") == entry["surviving_final"]["knowledge_finalization_sha256"]
+
     units = asset["units"]
     finalization = asset["finalization"]
-
-    # chain counts: 184 manifest items, 4 chunks, 62 -> 62 -> 62 -> 62
-    assert len(asset["manifest"]["evidence_items"]) == 184
-    assert len(asset["chunks"]["chunks"]) == 4
-    assert len(candidates["candidates"]) == 62
-    assert len(merged["units"]) == 62
-    assert len(enriched["units"]) == 62
     assert units["unit_count"] == 62
     assert finalization["input_unit_count"] == 62
     assert finalization["output_unit_count"] == 62
     assert finalization["identity_violation_count"] == 0
 
-    # fingerprint chain
-    assert merged["source_candidates_artifact_fingerprint"] == compute_candidates_artifact_fingerprint(candidates)
-    assert enriched["source_merged_artifact_fingerprint"] == compute_merged_artifact_fingerprint(merged)
-    assert finalization["source_enriched_artifact_fingerprint"] == compute_enriched_artifact_fingerprint(enriched)
-    assert finalization["finalization_fingerprint"] == compute_finalization_fingerprint(
-        compute_enriched_artifact_fingerprint(enriched), KNOWLEDGE_SCHEMA_VERSION, RenderConfig()
-    )
+    # M3 evidence still valid (chain counts)
+    assert len(asset["manifest"]["evidence_items"]) == 184
+    assert len(asset["chunks"]["chunks"]) == 4
 
-    # KU ID recomputation for every unit
+    # preserved historical anchors: finalization still records the ORIGINAL
+    # source_enriched anchor, and the anchor is NOT overwritten by any
+    # reconstruction or rerun fingerprint.
+    assert finalization["source_enriched_artifact_fingerprint"] == VIDEO_HISTORICAL_ENRICHED_ANCHOR
+    assert VIDEO_HISTORICAL_ENRICHED_ANCHOR == entry["historical_lost_intermediate"]["original_enriched_fingerprint"]
+    assert entry["historical_lost_intermediate"]["status"] == "unrecoverable"
+
+    # finalization_fingerprint (frozen historical) retained
+    assert finalization["finalization_fingerprint"]
+
+    # reconstructed + rerun artifacts are explicitly NOT the historical anchor
+    reconstructed = compute_enriched_artifact_fingerprint(asset["enriched"])
+    assert reconstructed != VIDEO_HISTORICAL_ENRICHED_ANCHOR
+    assert reconstructed == entry["current_noncanonical_reconstruction"]["fingerprint"]
+    assert entry["current_noncanonical_reconstruction"]["status"] == "forensic_only"
+    assert entry["isolated_real_rerun"]["enriched_fingerprint"] != VIDEO_HISTORICAL_ENRICHED_ANCHOR
+    assert entry["isolated_real_rerun"]["status"] == "forensic_only_not_adopted"
+
+    # M5 expected parity
+    assert entry["m5_expected_unit_count"] == 62
+
+    # KU ID recomputation for every unit (identity preserved)
     for u in units["units"]:
         eids = [r["evidence_id"] for r in u["evidence_refs"]]
         recomputed = compute_knowledge_unit_id(
@@ -545,19 +596,38 @@ def test_real_c10_video_entity_and_topic_grounding():
 
 
 def test_real_c10_album_full_chain_audit():
+    """Recovery contract: incident-aware audit for the provenance-loss asset.
+
+    See test_real_c10_video_full_chain_audit docstring — same semantics, album.
+    """
     asset = _load_asset(ALBUM_ASSET)
-    assert len(asset["manifest"]["evidence_items"]) == 4
-    assert len(asset["chunks"]["chunks"]) == 1
-    assert len(asset["candidates"]["candidates"]) == 6
-    assert len(asset["merged"]["units"]) == 6
-    assert len(asset["enriched"]["units"]) == 6
+    incident = _load_incident_manifest()
+    entry = _incident_asset_entry(incident, ALBUM_ASSET)
+
+    assert entry["surviving_final"]["unit_count"] == 6
+    kdir = ROOT / "data" / "processed" / ALBUM_ASSET / "knowledge"
+    assert _sha256(kdir / "knowledge_units.json") == entry["surviving_final"]["knowledge_units_sha256"]
+    assert _sha256(kdir / "knowledge_finalization.json") == entry["surviving_final"]["knowledge_finalization_sha256"]
+
     assert asset["units"]["unit_count"] == 6
     assert asset["finalization"]["identity_violation_count"] == 0
+    assert len(asset["manifest"]["evidence_items"]) == 4
+    assert len(asset["chunks"]["chunks"]) == 1
 
-    # fingerprint chain
-    assert asset["merged"]["source_candidates_artifact_fingerprint"] == compute_candidates_artifact_fingerprint(asset["candidates"])
-    assert asset["enriched"]["source_merged_artifact_fingerprint"] == compute_merged_artifact_fingerprint(asset["merged"])
-    assert asset["finalization"]["source_enriched_artifact_fingerprint"] == compute_enriched_artifact_fingerprint(asset["enriched"])
+    # preserved historical anchor
+    assert asset["finalization"]["source_enriched_artifact_fingerprint"] == ALBUM_HISTORICAL_ENRICHED_ANCHOR
+    assert ALBUM_HISTORICAL_ENRICHED_ANCHOR == entry["historical_lost_intermediate"]["original_enriched_fingerprint"]
+    assert entry["historical_lost_intermediate"]["status"] == "unrecoverable"
+
+    # reconstructed != historical anchor
+    reconstructed = compute_enriched_artifact_fingerprint(asset["enriched"])
+    assert reconstructed != ALBUM_HISTORICAL_ENRICHED_ANCHOR
+    assert reconstructed == entry["current_noncanonical_reconstruction"]["fingerprint"]
+    assert entry["current_noncanonical_reconstruction"]["status"] == "forensic_only"
+    assert entry["isolated_real_rerun"]["enriched_fingerprint"] != ALBUM_HISTORICAL_ENRICHED_ANCHOR
+    assert entry["isolated_real_rerun"]["status"] == "forensic_only_not_adopted"
+
+    assert entry["m5_expected_unit_count"] == 6
 
     # no unresolved visual grounding
     by_id = {item["evidence_id"]: item for item in asset["manifest"]["evidence_items"]}

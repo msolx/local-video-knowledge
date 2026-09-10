@@ -1,6 +1,7 @@
 # Milestone M4: Unified Knowledge Model · Architectural Decision Log
 
 > **Milestone Status**: `COMPLETE` (M4-00 ~ M4-06 all `DONE`; M4 accepted)
+> **C10 Historical Fixture Status**: `RECOVERED_WITH_INTERMEDIATE_PROVENANCE_LOSS` (2026-09-10; see `docs/M4_C10_ARTIFACT_INCIDENT_20260910.md` and `tests/fixtures/m4_c10_incident_20260910.json`. Canonical final knowledge preserved; historical M4 intermediate execution artifacts irreversibly lost; M4 code semantics remain SEALED.)
 > **Status**: APPROVED / ACTIVE  
 > **Context**: Transitioning from Grounded Evidence (M3 Output) to Structured Canonical Knowledge Units (M4 Output).
 
