@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 .. M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 .. M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -154,3 +154,51 @@
 ## Decision 25: Lease Semantics and Stale Worker Behavior (M6-02)
 - **Context**: Lease expiry recovery must distinguish "claimed but never started" from "executing when worker vanished", and a stale worker must not directly fail jobs.
 - **Decision**: Lease duration defaults to 120 s (configurable, injected clock). `LEASED`-before-start expiry requeues to `QUEUED` without consuming an attempt. `RUNNING` expiry closes the active attempt as `lease_expired`/`WorkerLeaseExpired` (retryable), applies backoff via `next_retry_at` (never immediate reclaim), and transitions to `FAILED_RETRYABLE` (or `FAILED_TERMINAL` on exhaustion). Worker staleness is derived from `last_heartbeat_at` + threshold and never directly fails jobs — job ownership is decided only by lease expiry. Worker heartbeat and job lease renewal are distinct concepts: heartbeat keeps the worker row alive; an active job lease must be explicitly renewed.
+
+---
+
+## Decision 26: Stage Adapters Wrap Sealed Entry Points; Orchestration Never Reimplements Pipeline Logic (M6-03)
+- **Context**: M6 must execute the M2→M5 stage chain from the durable job store, but M2–M5 production logic is sealed and must not be rewritten.
+- **Decision**: M6-03 adds `src/operations/stages.py` adapters that only resolve inputs, preflight, call the sealed stage APIs, detect artifact cache, validate outputs, and classify retryable/terminal errors. Adapters never reimplement download/media/knowledge logic. A typed frozen `StageExecutionResult` (`stage`, `canonical_id`, `status` ∈ `EXECUTED`/`CACHE_HIT`, `input_fingerprint`, `output_fingerprint`, `artifacts`, `metadata`) is the only handler return and is JSON-safe (no sqlite Rows, `Path` objects, Enum repr, secrets).
+
+---
+
+## Decision 27: Output Fingerprint = Deterministic Hash of Ordered Canonical Artifacts (M6-03)
+- **Context**: The scheduler needs `stage N output_fingerprint` as the durable `input_fingerprint` for stage N+1; a fingerprint that depends on time/worker/attempt/lease/job-id would break downstream identity.
+- **Decision**: `stage_output_fingerprint(...)` hashes the stage's canonical output artifacts in a canonical order (`(role, path, sha256)` sorted) plus a stage policy version. Where a stage already has a frozen fingerprint (M4 `fingerprint`/`finalization_fingerprint`, M5 `source_artifact_fingerprint`), it is reused rather than inventing a second incompatible scheme. `mtime`/creation time never participate.
+
+---
+
+## Decision 28: Artifact-Based Idempotency — Cache Hit Means Valid, Not Merely Present (M6-03)
+- **Context**: Worker execution is at-least-once; duplicate execution must resolve safely. A truncated/corrupt existing artifact must never be mistaken for a completed stage.
+- **Decision**: Every adapter follows INPUT → expected-output policy → if a schema-valid + fingerprint/policy-matching artifact already exists then `CACHE_HIT`, else execute the sealed stage, then validate the artifact invariant, then `EXECUTED`. Adapters validate real artifact content (e.g. `verify_evidence_manifest`/`verify_evidence_chunks`, `CanonicalKnowledgeUnitsDocument.from_dict()`, `CanonicalMediaAssetAdapter.load_from_dir`) — existence alone is never proof. Invalid existing artifacts are never silently overwritten: per-stage they either regenerate deterministically (safe) or fail `Terminal`/`Retryable`.
+
+---
+
+## Decision 29: Capability Mapping for Stage Adapters (M6-03)
+- **Context**: M6-04 scheduler needs a deterministic stage→capability map to route jobs to workers.
+- **Decision**: `required_capabilities_for_stage(stage, media_type=None)` freezes: `DISCOVER → (collector,)`, `ARCHIVE → (downloader,)`, `MEDIA_PROCESS(video) → (gpu_asr,)`, `MEDIA_PROCESS(album) → (gpu_vlm,)`, `KNOWLEDGE_EXTRACT → (llm_extraction,)`, `KNOWLEDGE_FINALIZE → ()` (deterministic render, control-plane executable), `STORE_INGEST → (store_ingest,)`. The MEDIA_PROCESS split reflects the real M3 routing (video ASR vs album OCR/VLM), not the stage name alone.
+
+---
+
+## Decision 30: Stage Result Persistence + Durable Downstream Fingerprint Handoff (M6-03)
+- **Context**: M6-02 `WorkerRuntime` coerced handler returns to `HandlerResult(metadata)`; a stage adapter returning `StageExecutionResult` was previously discarded/unsupported, so M6-04 could not reliably read `output_fingerprint`.
+- **Decision**: `WorkerRuntime` now accepts a `StageExecutionResult` return, validates identity (`stage`, `canonical_id`, `input_fingerprint` vs the claimed job; `output_fingerprint` must be a valid SHA-256; JSON-safe), and persists the full JSON payload into the successful attempt's `metadata_json`. New `get_job_result(job_id)` returns the latest successful attempt's `stage_result` — the durable handoff the scheduler reads for `output_fingerprint` without re-scanning artifacts. Job payloads stay identity/reference-only (no transcripts, media, cookies, LLM prompts).
+
+---
+
+## Decision 31: Error Classification Is Per-Adapter and Never Message-Substring Based (M6-03)
+- **Context**: Retryable vs terminal must be deterministic and actionable.
+- **Decision**: Adapters raise the frozen `RetryableJobError`/`TerminalJobError` with explicit classification: retryable = transient precondition (browser/auth runtime unavailable, network/temporary transfer, LLM endpoint down, store locked); terminal = schema-invalid upstream, unsupported media, corrupt source (hash mismatch), identity mismatch. Exceptions are wrapped at the adapter boundary with explicit stage semantics; no `IOError` blanket mapping.
+
+---
+
+## Decision 32: SQLite-Over-SMB Is Forbidden for the Operations DB (M6-03)
+- **Context**: Shared filesystem transfer is frozen for artifact/media exchange only; the NAS-owned `operations.sqlite3` must not be written by Windows workers over SMB.
+- **Decision**: The Operations DB is owned by the NAS control plane. Cross-machine worker protocol must go through a thin RPC/HTTP control-plane API or equivalent owner-mediated transport (not implemented in M6-03). Windows GPU workers write M5 to a disposable/local knowledge store or to NAS only via owner-mediated ingest. Store-owner is always a NAS-local process.
+
+---
+
+## Decision 33: At-Least-Once Replay + Input-Change Semantics (M6-03)
+- **Context**: Crash-after-side-effect-before-commit must resolve to one canonical artifact; a changed upstream input must not falsely cache-hit against an old output.
+- **Decision**: Replay is safe: first run `EXECUTED` writes the artifact, a re-claimed run sees the valid artifact and returns `CACHE_HIT` with the identical output fingerprint, leaving exactly one canonical artifact (P0 acceptance, tested). Cache semantics are input/policy provenance-driven: a changed input fingerprint forms a new logical job and never cache-hits against an old output. Both are covered by tests (`test_at_least_once_replay`, `test_changed_input_invalidates_old_output`).

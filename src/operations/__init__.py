@@ -82,6 +82,7 @@ from .store import (
     complete_job_terminal_failure,
     recover_expired_leases,
     is_worker_stale,
+    get_job_result,
     list_events,
     validate_operations_store,
 )
@@ -92,6 +93,27 @@ from .worker import (
     WorkerRunResult,
     WorkerRuntime,
     StageHandler,
+)
+from .stages import (
+    STAGES_POLICY_VERSION,
+    STAGE_EXECUTION_RESULT_SCHEMA_VERSION,
+    STATUS_EXECUTED,
+    STATUS_CACHE_HIT,
+    ArtifactDescriptor,
+    StageExecutionResult,
+    is_valid_sha256,
+    fingerprint_artifacts,
+    stage_output_fingerprint,
+    required_capabilities_for_stage,
+    StageAdapter,
+    DiscoverAdapter,
+    ArchiveAdapter,
+    MediaProcessAdapter,
+    KnowledgeExtractAdapter,
+    KnowledgeFinalizeAdapter,
+    StoreIngestAdapter,
+    build_stage_handler_registry,
+    validate_stage_execution_result,
 )
 
 __all__ = [
@@ -171,6 +193,7 @@ __all__ = [
     "complete_job_terminal_failure",
     "recover_expired_leases",
     "is_worker_stale",
+    "get_job_result",
     "list_events",
     "validate_operations_store",
     # M6-02 Worker runtime
@@ -180,4 +203,24 @@ __all__ = [
     "WorkerRunResult",
     "WorkerRuntime",
     "StageHandler",
+    # M6-03 Pipeline stage adapters
+    "STAGES_POLICY_VERSION",
+    "STAGE_EXECUTION_RESULT_SCHEMA_VERSION",
+    "STATUS_EXECUTED",
+    "STATUS_CACHE_HIT",
+    "ArtifactDescriptor",
+    "StageExecutionResult",
+    "is_valid_sha256",
+    "fingerprint_artifacts",
+    "stage_output_fingerprint",
+    "required_capabilities_for_stage",
+    "StageAdapter",
+    "DiscoverAdapter",
+    "ArchiveAdapter",
+    "MediaProcessAdapter",
+    "KnowledgeExtractAdapter",
+    "KnowledgeFinalizeAdapter",
+    "StoreIngestAdapter",
+    "build_stage_handler_registry",
+    "validate_stage_execution_result",
 ]

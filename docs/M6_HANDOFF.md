@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`; `M6-03 = NEXT`; `M6-04..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`; `M6-04 = NEXT`; `M6-05..M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -88,18 +88,29 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ---
 
+## 5c. M6-03 Deliverables Completed
+
+- `src/operations/stages.py` — stage adapter layer (`STAGES_POLICY_VERSION = m6-stages-policy-v1`, `STAGE_EXECUTION_RESULT_SCHEMA_VERSION = m6-stage-execution-result-v1`). Frozen `StageExecutionResult` (`stage`, `canonical_id`, `status` ∈ `EXECUTED|CACHE_HIT`, `input_fingerprint`, `output_fingerprint`, `artifacts`, `metadata`) + `validate_stage_execution_result` identity audit. `fingerprint_artifacts`/`stage_output_fingerprint` (canonical-ordered artifact descriptors + policy version; reuses frozen M4/M5 fingerprints). `required_capabilities_for_stage(stage, media_type=None)`. Adapters: `DiscoverAdapter`, `ArchiveAdapter`, `MediaProcessAdapter`, `KnowledgeExtractAdapter`, `KnowledgeFinalizeAdapter`, `StoreIngestAdapter`. `build_stage_handler_registry(...)` (DI registry feeding `WorkerRuntime`).
+- `src/operations/worker.py` — accepts a `StageExecutionResult` handler return, validates identity (stage/canonical/input match, SHA-256 output, JSON-safe), persists full JSON into the successful attempt `metadata_json` (`stage_result`). `src/operations/store.py` — `get_job_result(job_id)` (latest successful attempt's `stage_result` = durable downstream fingerprint handoff). `ClaimedJob` carries the job `metadata` reference.
+- `tests/test_operations_stages.py` — 55 tests (result/JSON-safety, deterministic + path-ordered fingerprinting, identity-mismatch rejection, capability map, all six adapters incl. fake success + valid cache-hit + invalid-existing-not-cache + retryable errors, worker runtime integration + persistence + durable fingerprint read, stale-token fencing, at-least-once replay EXECUTED→CACHE_HIT identical fingerprint one artifact, changed-input invalidation, partial-artifact rejection, secrets absent, real C10 video+album offline cache audits).
+- Verification: targeted `pytest tests/test_operations_store.py tests/test_operations_worker.py tests/test_operations_stages.py` = 191 passed; full `pytest tests -q` = 1456 passed / 10 skipped. No production ops DB created; production M5 knowledge store untouched (disposable temp DBs only); no network/GPU/LLM/live Douyin; M2–M5 production code unmodified.
+
+---
+
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-03 — Pipeline Stage Adapters for M2 → M5**
+**M6-04 — Scheduler + Automatic Downstream Orchestration**
 
-- Objective: wrap the real M2–M5 stage entry points (table in §4) as stage adapters that plug into the M6-02 `WorkerRuntime` handler registry. Each adapter executes the stage, verifies its artifact invariant (Decision 13 / architecture §17), and raises `RetryableJobError` / `TerminalJobError` accordingly.
-- Reuse: `src/operations/worker.py` (`WorkerRuntime`, `RetryableJobError`, `TerminalJobError`, `HandlerResult`), `src/operations/store.py` (claim/start/complete protocol), the M6-01 store primitives, and the M6-02 lease/fencing contract.
-- Deliverable (subject to M6-03 spec): stage adapters (`src/operations/` additions) + tests; idempotent artifact semantics are the key contract (resolves the at-least-once residual gap of Decision 22).
-- Constraints: never modify M2–M5 sealed modules; never modify M6-01/M6-02 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it; PC-offline stays `QUEUED` (never FAILED).
-- Commit message: per M6-03 spec.
-- M6-02 sealed the capability-worker and lease protocol: atomic claim, fencing token (`StaleLeaseError`), renewal, start-with-attempt, completion protocols, expired-lease recovery (`LEASED`→QUEUED no attempt; `RUNNING`→closed attempt + backoff), worker heartbeat/staleness (derived, never directly fails jobs), and the generic `WorkerRuntime` with injected handlers + long-job lease-renewal thread.
+- Objective: the NAS control-plane scheduler that polls collections, enqueues `DISCOVER`, and on stage success automatically enqueues the downstream stage for each asset, dispatching by capability ∩ resources (Topology A). Polling loop lives here (M6-03 deliberately did NOT implement a polling loop).
+- Reuse (all frozen): `src/operations/stages.py` (`required_capabilities_for_stage`, adapters, `build_stage_handler_registry`), `src/operations/worker.py` (`WorkerRuntime`), `src/operations/store.py` (`enqueue_job`, `claim_next_job`, `get_job`, `get_job_result`, `transition_asset_lifecycle`, `list_jobs`), and M6-01 primitives.
+- Fingerprint handoff is already durable: `get_job_result(job_id)` returns the successful attempt's `stage_result.output_fingerprint`, which becomes the next stage's `input_fingerprint`. Do NOT re-scan artifacts to guess fingerprints.
+- Key contracts: `DISCOVER` runs on a configurable polling interval (no frozen N); duplicate suppression + cursor/watermark reuse of M2; no nightly full rerun; PC-offline stays `QUEUED`; one GPU-heavy job per worker; stage success = artifact invariant; Operations DB owned by NAS control plane (no SQLite-over-SMB writes by workers); cross-machine transport must be owner-mediated (RPC/HTTP), not implemented in M6-03.
+- Trigger model (architecture doc): scheduled polling / heartbeat / downstream trigger. Scheduler crash-safety: enqueue is idempotent (`job_id` deterministic), so re-enqueue after crash is safe.
+- Constraints: never modify M2–M5 sealed modules; never modify M6-01/M6-02/M6-03 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
+- Commit message: per M6-04 spec.
+- M6-03 sealed the adapter layer: typed `StageExecutionResult`, artifact-based idempotency (`CACHE_HIT` requires schema-valid artifacts, never mere existence), per-stage capability mapping, per-adapter error classification, durable fingerprint handoff via `get_job_result`, and at-least-once replay safety.
 
-Do not start M6-04 until M6-03 is sealed.
+Do not start M6-05 until M6-04 is sealed.
 
 ---
 

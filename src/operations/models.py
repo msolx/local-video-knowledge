@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -344,6 +344,7 @@ class ClaimedJob:
     leased_at: str
     lease_expires_at: str
     _lease_token: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def lease_token(self) -> str:
@@ -362,6 +363,7 @@ class ClaimedJob:
             "lease_owner": self.lease_owner,
             "leased_at": self.leased_at,
             "lease_expires_at": self.lease_expires_at,
+            "metadata": dict(self.metadata),
         }
 
     def __repr__(self) -> str:

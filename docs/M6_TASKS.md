@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03..M6-09 TODO.
+> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04..M6-09 TODO.
 
 ---
 
@@ -11,7 +11,7 @@
 | M6-00 | DONE | `docs/M6_OPERATIONS_ARCHITECTURE.md`, `docs/M6_DECISIONS.md`, `docs/M6_TASKS.md`, `docs/M6_HANDOFF.md` |
 | M6-01 | DONE | `src/operations/` durable store + job state machine, `tests/test_operations_store.py` |
 | M6-02 | DONE | Local Worker Runtime + Capability/Lease Protocol |
-| M6-03 | TODO | Pipeline Stage Adapters for M2→M5 |
+| M6-03 | DONE | Pipeline Stage Adapters for M2→M5 |
 | M6-04 | TODO | Scheduler + Automatic Downstream Orchestration |
 | M6-05 | TODO | Crash Recovery / Retry / Observability |
 | M6-06 | TODO | Windows PC Worker Autostart |
@@ -90,18 +90,26 @@ Worker process that heartbeats capability set, claims jobs via leases, refreshes
 
 ---
 
-## M6-03: Pipeline Stage Adapters for M2→M5 (`TODO`)
+## M6-03: Pipeline Stage Adapters for M2→M5 (`DONE`)
 
 ### Objective
 Wrap every audited M2–M5 entry point (architecture doc §2) behind a uniform stage-adapter interface with invariant-gated success.
 
-### Scope hints
-- DISCOVER → collector sync adapter (`src.collector.cli` semantics / `CollectorService`).
-- ARCHIVE → downloader worker / `SafeDouyinDownloader`.
-- MEDIA_PROCESS/EVIDENCE_READY → `process_canonical_asset` / `process_canonical_album` + `write_evidence_manifest`/`write_evidence_chunks`.
-- KNOWLEDGE_EXTRACT/FINALIZE → `extract_knowledge_candidates` / `merge_knowledge_candidates` / `enrich_knowledge_candidates` / `finalize_knowledge_document`.
-- STORE_INGEST → `ingest_knowledge_document` (+ `validate_store`).
-- Success = artifact invariant (§17 of architecture doc), never exit code.
+### Delivered
+- `src/operations/stages.py` — the stage adapter layer. Frozen constants `STAGES_POLICY_VERSION = m6-stages-policy-v1`, `STAGE_EXECUTION_RESULT_SCHEMA_VERSION = m6-stage-execution-result-v1`, `STATUS_EXECUTED`/`STATUS_CACHE_HIT`; typed frozen `StageExecutionResult` (`stage`, `canonical_id`, `status`, `input_fingerprint`, `output_fingerprint`, `artifacts` descriptors `{role,path,sha256}`, `metadata`) with `validate()` + JSON-safe guarantee (no sqlite Row / `Path` / Enum repr / secrets). `validate_stage_execution_result(result, claimed)` enforces identity (`stage`/`canonical_id`/`input_fingerprint` vs the claimed job, SHA-256 output fingerprint).
+- `fingerprint_artifacts(...)`/`stage_output_fingerprint(...)` — deterministic SHA-256 over canonical-ordered `(role,path,sha256)` descriptors + stage policy version; reuses frozen fingerprints where a stage already has one (M4 `fingerprint`/`finalization_fingerprint`, M5 `source_artifact_fingerprint`).
+- `required_capabilities_for_stage(stage, media_type=None)` — frozen map (Decision 29): DISCOVER→collector, ARCHIVE→downloader, MEDIA_PROCESS(video)→gpu_asr, MEDIA_PROCESS(album)→gpu_vlm, KNOWLEDGE_EXTRACT→llm_extraction, KNOWLEDGE_FINALIZE→() , STORE_INGEST→store_ingest.
+- Adapters (each: preflight → sealed-call → invariant postcondition → `StageExecutionResult`):
+  - `DiscoverAdapter` — wraps `CollectorService.execute(mode)`; returns discovered identities (batch semantics, dedup); maps `CollectorErrorCode` → Retryable (DEPENDENCY_NOT_READY/AUTH_NOT_READY/RUNTIME_ERROR/LOCKED) vs Terminal (CONFIG_ERROR/NOT_IMPLEMENTED/UNKNOWN); no polling loop (M6-04).
+  - `ArchiveAdapter` — wraps `SafeDouyinDownloader`/downloader service; cache-hit iff `CanonicalMediaAssetAdapter.load_from_content_id` yields a formal archive (`asset_manifest.json`); missing `source_url` in job metadata → Retryable; auth/runtime preconditions → Retryable; downloader success must produce a loadable archive else Terminal.
+  - `MediaProcessAdapter` — wraps `process_canonical_asset`/`process_canonical_album`; cache-hit iff `verify_evidence_manifest` + `verify_evidence_chunks` pass (schema + fingerprint + `not_checked`); partial/corrupt evidence files present → Terminal (never silently overwrite); media_type routing (video ASR vs album OCR/VLM) drives capability + processor selection; postcondition re-verifies evidence.
+  - `KnowledgeExtractAdapter` — chains `extract_knowledge_candidates` → `merge_knowledge_candidates` → `enrich_knowledge_candidates`; respects M4 cache/fingerprint semantics (never "file exists → skip"); `FileNotFoundError` upstream → Retryable; postcondition: enriched artifact schema-valid.
+  - `KnowledgeFinalizeAdapter` — wraps `finalize_knowledge_document`; cache-hit iff `knowledge_units.json` parses via `CanonicalKnowledgeUnitsDocument.from_dict()` AND `canonical_id` matches the asset; upstream missing → Retryable; success requires re-parse; never mutates KU fields/verification status.
+  - `StoreIngestAdapter` — wraps `ingest_knowledge_document` against the configured knowledge store; `inserted`/`replaced`/`unchanged` all succeed (CACHE_HIT on unchanged); verifies `get_ingested_asset` + unit-count; `rebuild_store` never used for normal ingest; DB lock → Retryable.
+- `build_stage_handler_registry(...)` — dependency-injected adapter registry (workspace/processed/archive roots, knowledge store path, collector, downloader, media adapter, app config, LLM backend, M4 configs) returning the `{stage: handler}` mapping directly consumable by `WorkerRuntime`; all deps faked in tests.
+- `src/operations/worker.py` — accepts a `StageExecutionResult` handler return, validates it, and persists the JSON payload into the successful attempt `metadata_json` (`stage_result`); `store.py` gains `get_job_result(job_id)` for the durable downstream fingerprint handoff (Decision 30); `ClaimedJob` carries the job `metadata` reference.
+- `tests/test_operations_stages.py` — 55 tests covering: result serialization/JSON-safety, deterministic + path-ordered fingerprinting, invalid fingerprint/stage/canonical/input mismatch rejection, capability mapping for all stages, discover success/duplicate/retryable/missing-runtime, archive fake-success/valid-cache-hit/invalid-existing-not-cache/retryable-auth/missing-runtime, media video+album cache-hit/invalid-evidence/fingerprint, knowledge extract cached-chain + missing-evidence, finalize cache-hit/canonical-mismatch-not-cache/schema-invalid-not-cache, store ingest inserted/unchanged(CACHE_HIT)/replaced/disposable-db-only, handler registry, WorkerRuntime integration + result persistence + durable fingerprint read, stale-token-cannot-complete, at-least-once replay (EXECUTED → crash → CACHE_HIT, identical fingerprint, one artifact), changed-input-invalidates, partial-artifact-rejected, secrets absent from results, and real C10 video+album offline cache audits (read-only artifacts, disposable knowledge DBs).
+- Real verification: targeted `pytest tests/test_operations_store.py tests/test_operations_worker.py tests/test_operations_stages.py` = 191 passed; full `pytest tests -q` = 1456 passed / 10 skipped. No production `data/operations/operations.sqlite3` created, no production `data/knowledge/knowledge_store.sqlite3` modified (disposable temp DBs only), no network/GPU/LLM/live Douyin; M2–M5 production code untouched (only M6 `operations` modules extended additively).
 
 ---
 

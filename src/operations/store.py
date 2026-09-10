@@ -1740,6 +1740,35 @@ def list_job_attempts(db_path: Path, job_id: str) -> list[dict[str, Any]]:
         conn.close()
 
 
+def get_job_result(db_path: Path, job_id: str) -> Optional[dict[str, Any]]:
+    """Recover the durable StageExecutionResult of a job's latest successful
+    attempt (M6-03 §27 downstream fingerprint handoff).
+
+    Returns the ``stage_result`` metadata dict (containing output_fingerprint
+    and artifact descriptors) or ``None`` when no successful attempt recorded a
+    stage result yet. The output_fingerprint of stage N becomes the
+    input_fingerprint of stage N+1; M6-04 reads it here instead of rescanning
+    artifacts.
+    """
+    db_path = Path(db_path)
+    job_id = normalize_identity_component(job_id)
+    conn = open_operations_store(db_path)
+    try:
+        row = conn.execute(
+            "SELECT metadata_json FROM job_attempts "
+            "WHERE job_id=? AND outcome='succeeded' "
+            "ORDER BY attempt_number DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        meta = _json_loads(row["metadata_json"]) or {}
+        stage_result = meta.get("stage_result")
+        return stage_result if isinstance(stage_result, dict) else None
+    finally:
+        conn.close()
+
+
 # ----------------------------------------------------------------------
 # Workers (persistence only)
 # ----------------------------------------------------------------------
@@ -1937,6 +1966,7 @@ def _job_to_claimed(
         leased_at=now,
         lease_expires_at=lease_expires_at,
         _lease_token=lease_token,
+        metadata=_json_loads(job["metadata_json"]) or {},
     )
 
 

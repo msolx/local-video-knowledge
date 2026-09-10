@@ -23,6 +23,7 @@ M6-03; M6-02 uses injected callables.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,58 @@ __all__ = [
     "WorkerRuntime",
     "StageHandler",
 ]
+
+
+def _is_valid_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def _coerce_stage_result(result: Any, claimed: ClaimedJob) -> HandlerResult:
+    """M6-03: coerce a typed StageExecutionResult returned by a handler into a
+    HandlerResult whose metadata carries the JSON-safe stage result, after an
+    identity audit against the claimed job.
+
+    Identity audit (M6-03 §28): the stage result's stage, canonical_id and
+    input_fingerprint must equal the job's; output_fingerprint must be a valid
+    SHA-256; everything must be JSON-serializable. Any violation is terminal.
+    """
+    to_dict = getattr(result, "to_dict", None)
+    if not callable(to_dict):
+        raise TerminalJobError(
+            f"handler for {claimed.stage!r} returned unsupported type "
+            f"{type(result).__name__}"
+        )
+    payload = to_dict()
+    if not isinstance(payload, dict):
+        raise TerminalJobError(
+            f"handler for {claimed.stage!r} returned non-dict stage result"
+        )
+    if payload.get("stage") != claimed.stage:
+        raise TerminalJobError(
+            f"stage result stage {payload.get('stage')!r} != job stage "
+            f"{claimed.stage!r}"
+        )
+    if payload.get("canonical_id") != claimed.canonical_id:
+        raise TerminalJobError(
+            f"stage result canonical_id {payload.get('canonical_id')!r} != "
+            f"job canonical_id {claimed.canonical_id!r}"
+        )
+    if payload.get("input_fingerprint") != claimed.input_fingerprint:
+        raise TerminalJobError(
+            f"stage result input_fingerprint {payload.get('input_fingerprint')!r} != "
+            f"job input_fingerprint {claimed.input_fingerprint!r}"
+        )
+    if not _is_valid_sha256(payload.get("output_fingerprint")):
+        raise TerminalJobError("stage result output_fingerprint is not a valid SHA-256")
+    try:
+        json.dumps(payload)
+    except (TypeError, ValueError) as exc:
+        raise TerminalJobError(f"stage result is not JSON-safe: {exc}") from exc
+    return HandlerResult(ok=True, metadata={"stage_result": payload})
 
 
 class RetryableJobError(Exception):
@@ -270,10 +323,11 @@ class WorkerRuntime:
                     )
                 result = HandlerResult()
             elif not isinstance(result, HandlerResult):
-                raise TerminalJobError(
-                    f"handler for {claimed.stage!r} returned unsupported type "
-                    f"{type(result).__name__}"
-                )
+                # M6-03 additive integration: a handler may return a typed
+                # StageExecutionResult (JSON-safe, exposes to_dict()). The worker
+                # audits identity before completion so a mismatched stage result
+                # can never be committed as SUCCEEDED.
+                result = _coerce_stage_result(result, claimed)
 
             if self.lease_lost:
                 return WorkerRunResult(
