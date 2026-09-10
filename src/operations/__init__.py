@@ -115,6 +115,17 @@ from .stages import (
     build_stage_handler_registry,
     validate_stage_execution_result,
 )
+from .scheduler import (
+    SCHEDULER_POLICY_VERSION,
+    SCHEDULER_SCHEMA_VERSION,
+    SchedulerCycleResult,
+    PollSource,
+    Scheduler,
+    SchedulerError,
+    discovery_control_fingerprint,
+    poll_slot_fingerprint,
+    epoch_seconds,
+)
 
 __all__ = [
     # M6-01 Operations domain model
@@ -223,4 +234,14 @@ __all__ = [
     "StoreIngestAdapter",
     "build_stage_handler_registry",
     "validate_stage_execution_result",
+    # M6-04 Automatic pipeline scheduler
+    "SCHEDULER_POLICY_VERSION",
+    "SCHEDULER_SCHEMA_VERSION",
+    "SchedulerCycleResult",
+    "PollSource",
+    "Scheduler",
+    "SchedulerError",
+    "discovery_control_fingerprint",
+    "poll_slot_fingerprint",
+    "epoch_seconds",
 ]

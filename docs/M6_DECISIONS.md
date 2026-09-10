@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 .. M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 .. M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -202,3 +202,57 @@
 ## Decision 33: At-Least-Once Replay + Input-Change Semantics (M6-03)
 - **Context**: Crash-after-side-effect-before-commit must resolve to one canonical artifact; a changed upstream input must not falsely cache-hit against an old output.
 - **Decision**: Replay is safe: first run `EXECUTED` writes the artifact, a re-claimed run sees the valid artifact and returns `CACHE_HIT` with the identical output fingerprint, leaving exactly one canonical artifact (P0 acceptance, tested). Cache semantics are input/policy provenance-driven: a changed input fingerprint forms a new logical job and never cache-hits against an old output. Both are covered by tests (`test_at_least_once_replay`, `test_changed_input_invalidates_old_output`).
+
+---
+
+## Decision 34: Reconciliation Scheduler, Not Event-Stream Scheduler (M6-04)
+- **Context**: A scheduler that only reacts to an in-memory event chain loses state on restart; "the job SUCCEEDED but the downstream was never enqueued" must self-heal.
+- **Decision**: `src/operations/scheduler.py` is **level-triggered / reconciliation-oriented**. `run_once(now)` re-derives desired state purely from the durable DB + artifacts + `StageExecutionResult` state: recover expired leases → requeue due `FAILED_RETRYABLE` → process completed `DISCOVER` results → reconcile asset pipelines (advance lifecycles, enqueue missing downstream) → schedule `DISCOVER` polls. No memory-only event chain; a restarted scheduler reconstructs all downstream decisions from durable state.
+
+---
+
+## Decision 35: DISCOVER Is a Batch Producer, Not a Per-Asset Parent (M6-04)
+- **Context**: `DiscoverAdapter` returns many `(platform, platform_content_id)` identities per poll; treating DISCOVER as one pipeline's parent would emit a single ARCHIVE job for many assets.
+- **Decision**: A successful DISCOVER `StageExecutionResult` is processed once (tracked by `scheduler_state.processed_discover_jobs`), and **each** discovered identity is independently registered (idempotent `register_asset`) and enqueued an `ARCHIVE` job under its own pipeline run. DISCOVER is not part of the single-asset downstream graph (`ASSET_PIPELINE_GRAPH = ARCHIVE → MEDIA_PROCESS → KNOWLEDGE_EXTRACT → KNOWLEDGE_FINALIZE → STORE_INGEST`).
+
+---
+
+## Decision 36: DISCOVER Control Identity + Deterministic Poll Generation (M6-04)
+- **Context**: DISCOVER polling has no natural content asset; a real content id would pollute asset identity, and a timestamp-based fingerprint would break recovery.
+- **Decision**: A reserved **control asset** is used: `(platform, "__discover__")` → `canonical_id = control_{platform}_{source_key}_discover`, flagged `control_plane=True`, never conflicting with real Douyin assets. Poll jobs use `poll_slot_fingerprint(platform, poll_slot, source_key, policy_version)` where `poll_slot = epoch_seconds(now) // interval_seconds` — a deterministic **scheduler trigger identity** (explicitly documented as NOT a knowledge/artifact identity). Overlap suppression: while any DISCOVER job is `QUEUED/LEASED/RUNNING` for the control asset, no new poll is enqueued; the scheduler still advances `last_scheduled_at/next_due_at` so it never spins. When a prior ARCHIVE generation for an asset ended `FAILED_TERMINAL/CANCELLED`, `discovery_control_fingerprint(platform, content_id, generation=N, ...)` bumps `N` so re-discovery forms a new ARCHIVE generation. Watermark/checkpoint semantics stay entirely with M2's collector.
+
+---
+
+## Decision 37: Downstream Enqueue Reuses the Durable Fingerprint Handoff (M6-04)
+- **Context**: The scheduler must enqueue stage N+1 with the exact output of stage N.
+- **Decision**: For every SUCCEEDED stage the scheduler reads `get_job_result(job_id)`, takes `output_fingerprint`, and enqueues the next stage with `input_fingerprint = output_fingerprint` and `required_capabilities_for_stage(next_stage, media_type=...)`. `CACHE_HIT` and `EXECUTED` are equally successful outputs and both advance the pipeline. If a SUCCEEDED job has no valid stage result, the scheduler records an `orchestration_invariant_failure` event, fails the pipeline run, and never guesses a fingerprint. The `media_type` needed to route `MEDIA_PROCESS` (`gpu_asr` vs `gpu_vlm`) comes from the ARCHIVE result `metadata` (a minimal M6-04 gap-fill to `ArchiveAdapter` — the M2 media adapter is untouched).
+
+---
+
+## Decision 38: Asset Lifecycle = Highest Milestone; Freshness = Run Generation (M6-04)
+- **Context**: An asset may be `SEARCHABLE` while a newer refresh pipeline is still `RUNNING`; lifecycle must never regress (`SEARCHABLE → ARCHIVED` is illegal in M6-01).
+- **Decision**: Asset lifecycle is monotonic "highest completed capability milestone" (`DISCOVERED → ARCHIVED → EVIDENCE_READY → KNOWLEDGE_READY → SEARCHABLE`). `KNOWLEDGE_EXTRACT` maps to no asset milestone (no new lifecycle state invented). Freshness is represented by the pipeline-run/job generation: a changed upstream fingerprint creates a new logical job generation under the same asset, advancing independently without touching lifecycle. `transition_asset_lifecycle` is only called when the milestone rank strictly increases.
+
+---
+
+## Decision 39: Pipeline Run Completion Is Derived, Not "Last Job Enqueued" (M6-04)
+- **Context**: A run must not be marked complete merely because `STORE_INGEST` was enqueued.
+- **Decision**: A pipeline run is `SUCCEEDED` only when `STORE_INGEST` is `SUCCEEDED` AND the asset is `SEARCHABLE` (run completion is derived in the reconciliation loop). A `FAILED_TERMINAL`/`CANCELLED` current-generation job fails/cancels the run (`FAILED`/`CANCELLED`). Runs are reused while `RUNNING` (`list_pipeline_runs(status=RUNNING)`), preventing duplicate run creation across scheduler cycles.
+
+---
+
+## Decision 40: Retry Requeue and Lease Recovery Are Scheduler Phase-0 Duties (M6-04)
+- **Context**: Retry timing and lease expiry were built in M6-02 as store primitives but nobody was driving them.
+- **Decision**: `run_once` calls `recover_expired_leases(now)` (M6-02 reuse, never reimplemented) and requeues `FAILED_RETRYABLE` jobs whose `next_retry_at <= now` and `attempt_count < max_attempts` via `requeue_retryable_job` — same logical job identity, no new job. Not-yet-due jobs stay `FAILED_RETRYABLE`. PC-offline semantics are unchanged: capability-missing jobs stay `QUEUED` and never fail the pipeline; `KNOWLEDGE_FINALIZE` has empty capabilities (control-plane executable), all other stages carry their frozen capability set.
+
+---
+
+## Decision 41: Scheduler State Lives in Operations DB, Not a Second M2 Watermark (M6-04)
+- **Context**: Poll timing must survive scheduler restart but must not duplicate the M2 collector's cursor/watermark.
+- **Decision**: A minimal additive `scheduler_state` table (`scheduler_key PK`, `last_scheduled_at`, `last_completed_at`, `next_due_at`, `metadata_json`) records only scheduler/control timing (`discover:{platform}:{source_key}` keys). M2's collector remains the sole source of truth for the Douyin cursor/watermark. `operations-store-v1` is retained (no production Ops DB yet; an old dev DB requires rebuild). Duplicate suppression relies on M6-01 enqueue idempotency (deterministic `job_id`) — no separate in-memory dedup cache.
+
+---
+
+## Decision 42: Scheduler Events Are Mutation-Delimited (M6-04)
+- **Context**: A poll scheduler running every cycle must not flood `event_log` with idle ticks.
+- **Decision**: Scheduler writes append-only events only on actual mutations: poll scheduled (only when a poll job is newly created), assets registered, pipeline run created/completed/failed/cancelled, downstream job enqueued (only when created), lifecycle advanced, retry requeued, orchestration invariant failure. Idle cycles append nothing.

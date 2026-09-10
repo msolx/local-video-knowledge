@@ -505,6 +505,25 @@ class ArchiveAdapter(StageAdapter):
             )
         return artifacts
 
+    def _media_type(self, asset: Any) -> Optional[str]:
+        """Resolve a durable media_type ('video'/'album') from the formal asset.
+
+        Minimal M6-04 gap-fill: the scheduler needs media_type to route the
+        MEDIA_PROCESS capability (video -> gpu_asr, album -> gpu_vlm). We never
+        infer it from canonical_id.
+        """
+        if getattr(asset, "is_video", False):
+            return "video"
+        if getattr(asset, "is_album", False):
+            return "album"
+        ctype = getattr(asset, "content_type", None)
+        ctype_str = str(getattr(ctype, "value", ctype)).lower()
+        if "video" in ctype_str:
+            return "video"
+        if "album" in ctype_str or "image" in ctype_str:
+            return "album"
+        return None
+
     def execute(self, claimed: Any) -> StageExecutionResult:
         asset = self._load_asset(claimed)
         if asset is not None:
@@ -517,7 +536,11 @@ class ArchiveAdapter(StageAdapter):
                     self.stage, self._archive_artifacts(asset), policy_version=self.policy_version
                 ),
                 artifacts=tuple(self._archive_artifacts(asset)),
-                metadata={"cache_hit": True, "archive": True},
+                metadata={
+                    "cache_hit": True,
+                    "archive": True,
+                    "media_type": self._media_type(asset),
+                },
             )
         if self.downloader is None:
             raise RetryableJobError("downloader runtime not available")
@@ -545,7 +568,11 @@ class ArchiveAdapter(StageAdapter):
                 self.stage, self._archive_artifacts(asset), policy_version=self.policy_version
             ),
             artifacts=tuple(self._archive_artifacts(asset)),
-            metadata={"cache_hit": False, "archive": True},
+            metadata={
+                "cache_hit": False,
+                "archive": True,
+                "media_type": self._media_type(asset),
+            },
         )
 
     def _build_task(self, claimed: Any):

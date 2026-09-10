@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`; `M6-04 = NEXT`; `M6-05..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`; `M6-05 = NEXT`; `M6-06..M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -97,20 +97,29 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ---
 
+## 5d. M6-04 Deliverables Completed
+
+- `src/operations/scheduler.py` — reconciliation/level-triggered scheduler (Decision 34). `SCHEDULER_POLICY_VERSION = m6-scheduler-policy-v1`, `SCHEDULER_SCHEMA_VERSION = m6-scheduler-v1`. Frozen `SchedulerCycleResult` (10 counters; JSON-safe). `run_once(now)` in five frozen phases (recover leases → requeue due retryable → process DISCOVER results → reconcile runs → schedule polls); `run_forever(poll_interval_seconds, stop_event)` stdlib-only.
+- DISCOVER batch semantics (Decision 35): control asset `(platform, "__discover__")` → `control_{platform}_{source_key}_discover`; each discovered identity independently registered + `ARCHIVE` enqueued under its own RUNNING pipeline run; processed-DISCOVER tracking in `scheduler_state.processed_discover_jobs`. Deterministic poll generation (Decision 36): `poll_slot = epoch_seconds(now)//interval_seconds` in `poll_slot_fingerprint`; overlap suppression; `discovery_control_fingerprint(..., generation=N, ...)` bumps ARCHIVE generation after terminal/cancelled; M2 owns the watermark.
+- `ASSET_PIPELINE_GRAPH = (ARCHIVE → MEDIA_PROCESS → KNOWLEDGE_EXTRACT → KNOWLEDGE_FINALIZE → STORE_INGEST)`; `STAGE_MILESTONES` (KNOWLEDGE_EXTRACT has none). Downstream `input_fingerprint` = upstream `get_job_result().output_fingerprint`; `CACHE_HIT` and `EXECUTED` both advance; missing/invalid stage result → `orchestration_invariant_failure` + run FAILED (Decision 37). `required_capabilities_for_stage` reused verbatim; `media_type` for MEDIA_PROCESS routing from ARCHIVE result `metadata` (additive `ArchiveAdapter` gap-fill; M2 untouched).
+- Lifecycle = highest milestone, monotonic, never regress; freshness = run/job generation (Decision 38). Run completion derived from `STORE_INGEST` SUCCEEDED + `SEARCHABLE` (Decision 39). Retry requeue + `recover_expired_leases` are phase-0 duties (Decision 40). PC-offline stays `QUEUED`.
+- Additive persistence: `scheduler_state` table + `get/set_scheduler_state` + `list_pipeline_runs(canonical_id, status)` (Decision 41); `operations-store-v1` retained (old dev Ops DB requires rebuild). Events are mutation-delimited (Decision 42).
+- `tests/test_operations_scheduler.py` — 39 tests incl. synthetic unattended full E2E (DISCOVER→…→SEARCHABLE, zero manual enqueues), restart recovery (new Scheduler instance self-heals), duplicate-cycle no-op, retry before/at due, PC-offline queued, terminal stops downstream, refresh generation without lifecycle regress, real C10 video+album offline chains through real adapters into disposable M5 stores.
+- Verification: targeted `pytest tests/test_operations_store.py tests/test_operations_worker.py tests/test_operations_stages.py tests/test_operations_scheduler.py` = 230 passed; full `pytest tests -q` = 1495 passed / 10 skipped. No production ops DB created; production M5 knowledge store untouched (disposable temp DBs only); no network/GPU/LLM/live Douyin; M2–M5 production code unmodified.
+
+---
+
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-04 — Scheduler + Automatic Downstream Orchestration**
+**M6-05 — Crash Recovery / Retry / Observability**
 
-- Objective: the NAS control-plane scheduler that polls collections, enqueues `DISCOVER`, and on stage success automatically enqueues the downstream stage for each asset, dispatching by capability ∩ resources (Topology A). Polling loop lives here (M6-03 deliberately did NOT implement a polling loop).
-- Reuse (all frozen): `src/operations/stages.py` (`required_capabilities_for_stage`, adapters, `build_stage_handler_registry`), `src/operations/worker.py` (`WorkerRuntime`), `src/operations/store.py` (`enqueue_job`, `claim_next_job`, `get_job`, `get_job_result`, `transition_asset_lifecycle`, `list_jobs`), and M6-01 primitives.
-- Fingerprint handoff is already durable: `get_job_result(job_id)` returns the successful attempt's `stage_result.output_fingerprint`, which becomes the next stage's `input_fingerprint`. Do NOT re-scan artifacts to guess fingerprints.
-- Key contracts: `DISCOVER` runs on a configurable polling interval (no frozen N); duplicate suppression + cursor/watermark reuse of M2; no nightly full rerun; PC-offline stays `QUEUED`; one GPU-heavy job per worker; stage success = artifact invariant; Operations DB owned by NAS control plane (no SQLite-over-SMB writes by workers); cross-machine transport must be owner-mediated (RPC/HTTP), not implemented in M6-03.
-- Trigger model (architecture doc): scheduled polling / heartbeat / downstream trigger. Scheduler crash-safety: enqueue is idempotent (`job_id` deterministic), so re-enqueue after crash is safe.
-- Constraints: never modify M2–M5 sealed modules; never modify M6-01/M6-02/M6-03 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
-- Commit message: per M6-04 spec.
-- M6-03 sealed the adapter layer: typed `StageExecutionResult`, artifact-based idempotency (`CACHE_HIT` requires schema-valid artifacts, never mere existence), per-stage capability mapping, per-adapter error classification, durable fingerprint handoff via `get_job_result`, and at-least-once replay safety.
+- Objective: harden the scheduler + worker runtime against real crash/interruption scenarios and surface observability for the NAS control plane (the M6-04 scheduler is the durable driver; M6-05 adds the recovery/retry/observability surface the architecture doc's §27 recovery test plan calls for).
+- Reuse (all frozen): `src/operations/scheduler.py` (`Scheduler.run_once`/`run_forever`, phase-0 lease recovery + retry requeue, `SchedulerCycleResult`), `src/operations/store.py` (`recover_expired_leases`, `requeue_retryable_job`, `get_job_result`, `list_failed_jobs`, `list_pending_jobs`, `list_events`, `validate_operations_store`), `src/operations/worker.py` (`WorkerRuntime`), `src/operations/stages.py` (adapters).
+- Key contracts to exercise/prove: scheduler crash between job SUCCEEDED and lifecycle advance; worker crash after side-effect before commit (at-least-once replay); PC shutdown mid-ASR (lease expiry → retryable attempt accounting); network disconnect; duplicate discovery/enqueue; partial download; corrupted artifact (never cache-hit); LLM runtime unavailable; store ingest failure; restarts after hours/days. Admin surface: list pending/failed, retry, cancel, requeue, worker status, asset pipeline status.
+- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-04 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
+- Commit message: per M6-05 spec.
 
-Do not start M6-05 until M6-04 is sealed.
+Do not start M6-05 until it is explicitly requested; M6-04 is sealed above.
 
 ---
 

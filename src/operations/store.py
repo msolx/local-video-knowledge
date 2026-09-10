@@ -93,6 +93,9 @@ __all__ = [
     "create_pipeline_run",
     "complete_pipeline_run",
     "get_pipeline_run",
+    "list_pipeline_runs",
+    "get_scheduler_state",
+    "set_scheduler_state",
     "enqueue_job",
     "get_job",
     "list_jobs",
@@ -150,6 +153,18 @@ EVENT_WORKER_HEARTBEAT = "worker_heartbeat"
 EVENT_JOB_CLAIMED = "job_claimed"
 EVENT_LEASE_EXPIRED_REQUEUED = "lease_expired_requeued"
 EVENT_ATTEMPT_CLOSED_EXPIRED = "attempt_closed_lease_expired"
+
+# M6-04 scheduler event types
+EVENT_POLL_SCHEDULED = "poll_scheduled"
+EVENT_POLL_REQUEUED = "poll_requeued"
+EVENT_DISCOVERY_ASSETS_REGISTERED = "scheduler_assets_registered"
+EVENT_PIPELINE_RUN_CREATED = "scheduler_pipeline_run_created"
+EVENT_DOWNSTREAM_ENQUEUED = "scheduler_downstream_enqueued"
+EVENT_LIFECYCLE_ADVANCED = "scheduler_lifecycle_advanced"
+EVENT_RUN_COMPLETED_SCHEDULER = "scheduler_run_completed"
+EVENT_RUN_FAILED_SCHEDULER = "scheduler_run_failed"
+EVENT_RETRY_REQUEUED = "scheduler_retry_requeued"
+EVENT_ORCHESTRATION_INVARIANT = "orchestration_invariant_failure"
 
 _META_SCHEMA_VERSION_KEY = "schema_version"
 _META_POLICY_VERSION_KEY = "policy_version"
@@ -231,6 +246,7 @@ def _required_tables_exist(conn: sqlite3.Connection) -> bool:
         "job_attempts",
         "workers",
         "event_log",
+        "scheduler_state",
     }
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -368,6 +384,14 @@ CREATE INDEX IF NOT EXISTS idx_event_timestamp ON event_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_event_canonical ON event_log(canonical_id);
 CREATE INDEX IF NOT EXISTS idx_event_job ON event_log(job_id);
 CREATE INDEX IF NOT EXISTS idx_event_type ON event_log(event_type);
+
+CREATE TABLE IF NOT EXISTS scheduler_state (
+    scheduler_key TEXT PRIMARY KEY,
+    last_scheduled_at TEXT,
+    last_completed_at TEXT,
+    next_due_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 
@@ -879,6 +903,36 @@ def get_pipeline_run(db_path: Path, run_id: str) -> Optional[dict[str, Any]]:
             (normalize_identity_component(run_id),),
         ).fetchone()
         return _row_dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_pipeline_runs(
+    db_path: Path,
+    *,
+    canonical_id: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """List pipeline runs, newest first, optionally filtered by asset/status.
+
+    Additive M6-04 read helper (pipeline progression persistence).
+    """
+    conn = open_operations_store(Path(db_path))
+    try:
+        where: list[str] = []
+        params: list[Any] = []
+        if canonical_id is not None:
+            where.append("canonical_id = ?")
+            params.append(normalize_identity_component(canonical_id))
+        if status is not None:
+            where.append("status = ?")
+            params.append(normalize_identity_component(status).upper())
+        sql = "SELECT * FROM pipeline_runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, run_id DESC"
+        rows = conn.execute(sql, params).fetchall()
+        return [_row_dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -2659,6 +2713,87 @@ def list_events(
             params.append(int(limit))
         rows = conn.execute(sql, params).fetchall()
         return [_row_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ----------------------------------------------------------------------
+# Scheduler state (M6-04 additive control-plane persistence)
+# ----------------------------------------------------------------------
+
+
+def get_scheduler_state(db_path: Path, scheduler_key: str) -> Optional[dict[str, Any]]:
+    """Read scheduler control state for a control-plane key (e.g. a source poll)."""
+    conn = open_operations_store(Path(db_path))
+    try:
+        row = conn.execute(
+            "SELECT * FROM scheduler_state WHERE scheduler_key=?",
+            (normalize_identity_component(scheduler_key),),
+        ).fetchone()
+        return _row_dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def set_scheduler_state(
+    db_path: Path,
+    scheduler_key: str,
+    *,
+    last_scheduled_at: Optional[str] = None,
+    last_completed_at: Optional[str] = None,
+    next_due_at: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+    now: Optional[str] = None,
+) -> dict[str, Any]:
+    """Upsert scheduler control state for a control-plane key.
+
+    Additive M6-04 persistence: poll timing/control state lives here, never a
+    second copy of the M2 collector cursor/watermark (that stays in M2).
+    """
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    key = normalize_identity_component(scheduler_key)
+    conn = open_operations_store(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT * FROM scheduler_state WHERE scheduler_key=?", (key,)
+            ).fetchone()
+            merged_meta: dict[str, Any] = {}
+            if existing is not None:
+                merged_meta = _json_loads(existing["metadata_json"]) or {}
+            if metadata is not None:
+                merged_meta.update(dict(metadata))
+            conn.execute(
+                """
+                INSERT INTO scheduler_state(
+                    scheduler_key, last_scheduled_at, last_completed_at,
+                    next_due_at, metadata_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scheduler_key) DO UPDATE SET
+                    last_scheduled_at = COALESCE(excluded.last_scheduled_at, scheduler_state.last_scheduled_at),
+                    last_completed_at = COALESCE(excluded.last_completed_at, scheduler_state.last_completed_at),
+                    next_due_at = COALESCE(excluded.next_due_at, scheduler_state.next_due_at),
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    key,
+                    last_scheduled_at,
+                    last_completed_at,
+                    next_due_at,
+                    _json_dumps(merged_meta),
+                ),
+            )
+            conn.commit()
+            return _row_dict(
+                conn.execute(
+                    "SELECT * FROM scheduler_state WHERE scheduler_key=?", (key,)
+                ).fetchone()
+            )
+        except BaseException:
+            conn.rollback()
+            raise
     finally:
         conn.close()
 

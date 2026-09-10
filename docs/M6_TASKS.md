@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04..M6-09 TODO.
+> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05..M6-09 TODO.
 
 ---
 
@@ -12,7 +12,7 @@
 | M6-01 | DONE | `src/operations/` durable store + job state machine, `tests/test_operations_store.py` |
 | M6-02 | DONE | Local Worker Runtime + Capability/Lease Protocol |
 | M6-03 | DONE | Pipeline Stage Adapters for M2→M5 |
-| M6-04 | TODO | Scheduler + Automatic Downstream Orchestration |
+| M6-04 | DONE | Scheduler + Automatic Downstream Orchestration |
 | M6-05 | TODO | Crash Recovery / Retry / Observability |
 | M6-06 | TODO | Windows PC Worker Autostart |
 | M6-07 | TODO | NAS Docker Control Plane Deployment |
@@ -113,7 +113,7 @@ Wrap every audited M2–M5 entry point (architecture doc §2) behind a uniform s
 
 ---
 
-## M6-04: Scheduler + Automatic Downstream Orchestration (`TODO`)
+## M6-04: Scheduler + Automatic Downstream Orchestration (`DONE`)
 
 ### Objective
 Scheduler (NAS) that polls collections, enqueues DISCOVER, and triggers downstream stages on success; dispatches by capability ∩ resources.
@@ -123,6 +123,17 @@ Scheduler (NAS) that polls collections, enqueues DISCOVER, and triggers downstre
 - Configurable polling interval (no frozen N).
 - Duplicate suppression + cursor/checkpoint reuse of M2 watermark.
 - No nightly full rerun.
+
+### Delivered
+- `src/operations/scheduler.py` — the reconciliation/level-triggered control-plane scheduler (Decision 34). Frozen `SCHEDULER_POLICY_VERSION = m6-scheduler-policy-v1`, `SCHEDULER_SCHEMA_VERSION = m6-scheduler-v1`; frozen `SchedulerCycleResult` (10 counters: `expired_leases_recovered`, `retry_jobs_requeued`, `assets_registered`, `pipeline_runs_created`, `jobs_enqueued`, `lifecycles_advanced`, `runs_completed`, `runs_failed`, `polls_scheduled`, `invariant_failures`; JSON-safe). Deterministic `run_once(now)` in five frozen phases: (1) recover expired leases → (2) requeue due `FAILED_RETRYABLE` → (3) process completed DISCOVER results → (4) reconcile asset pipelines (lifecycle advance + missing downstream enqueue + run finalize) → (5) schedule DISCOVER polls. `run_forever(poll_interval_seconds, stop_event)` is stdlib-only (threading.Event), no external queue framework.
+- DISCOVER is a batch producer (Decision 35): each discovered identity is independently registered + enqueued an `ARCHIVE` job under its own pipeline run; processed DISCOVER jobs are tracked in `scheduler_state.processed_discover_jobs` to prevent event spam and duplicate processing across cycles.
+- DISCOVER control identity (Decision 36): reserved control asset `(platform, "__discover__")` → `control_{platform}_{source_key}_discover`; `poll_slot_fingerprint` uses a deterministic `poll_slot = epoch_seconds(now) // interval_seconds` (documented scheduler trigger identity, not a knowledge/artifact identity); overlap suppression while any DISCOVER job is active; `discovery_control_fingerprint(..., generation=N, ...)` bumps `N` when a prior ARCHIVE generation ended terminal/cancelled so re-discovery forms a new ARCHIVE generation; M2 collector stays the sole watermark/cursor owner.
+- `ASSET_PIPELINE_GRAPH = (ARCHIVE, MEDIA_PROCESS, KNOWLEDGE_EXTRACT, KNOWLEDGE_FINALIZE, STORE_INGEST)`; `STAGE_MILESTONES = {ARCHIVE: ARCHIVED, MEDIA_PROCESS: EVIDENCE_READY, KNOWLEDGE_FINALIZE: KNOWLEDGE_READY, STORE_INGEST: SEARCHABLE}` (KNOWLEDGE_EXTRACT has no milestone). Downstream enqueue reads `get_job_result(job_id).output_fingerprint` → next `input_fingerprint`; `CACHE_HIT` and `EXECUTED` both advance (Decision 37). `required_capabilities_for_stage(next_stage, media_type=...)` reused verbatim; `media_type` for `MEDIA_PROCESS` routing comes from the ARCHIVE result `metadata` (minimal `ArchiveAdapter` gap-fill, M2 untouched).
+- Lifecycle is "highest completed milestone" (monotonic; never regress — `transition_asset_lifecycle` only on strict rank increase); freshness is the run/job generation; a `SEARCHABLE` asset can host a new RUNNING refresh run without lifecycle regression (Decision 38). Pipeline run completion is derived: `SUCCEEDED` only when `STORE_INGEST` SUCCEEDED + asset `SEARCHABLE`; `FAILED_TERMINAL`/`CANCELLED` current-generation job fails/cancels the run; RUNNING runs are reused to avoid duplicates (Decision 39).
+- Retry requeue + lease recovery are scheduler phase-0 duties (Decision 40): `recover_expired_leases(now)` reused from M6-02 (never reimplemented); due retryable jobs requeued with the SAME `job_id`. PC-offline: capability-missing jobs stay `QUEUED`, never FAILED; no attempt consumed while offline.
+- Scheduler state persistence (Decision 41): additive `scheduler_state` table (`scheduler_key PK`, `last_scheduled_at`, `last_completed_at`, `next_due_at`, `metadata_json`) via `get/set_scheduler_state`; `list_pipeline_runs(canonical_id, status)` added for active-run lookup; `operations-store-v1` retained (old dev Ops DB requires rebuild; no migration engine). Events are mutation-delimited (Decision 42) — idle cycles append nothing.
+- `tests/test_operations_scheduler.py` — 39 tests covering: `SchedulerCycleResult` serialization, empty cycle no-op, lease recovery integration, retry before/at due (same job identity), poll due/not-due/overlap-suppression/generation determinism, DISCOVER batch processing (multiple + duplicate + dedup), pipeline-run create/suppression, per-stage enqueue + lifecycle progression (ARCHIVE→ARCHIVED, MEDIA→EVIDENCE_READY, FINALIZE→KNOWLEDGE_READY, STORE_INGEST→SEARCHABLE), run success, cache-hit continues, required capabilities reused (incl. media_type routing), downstream input=upstream output fingerprint, missing/invalid stage-result invariant failure, terminal failure stops downstream + run FAILED + asset stays ARCHIVED, cancelled run no downstream, PC-offline stays QUEUED with no attempt, duplicate cycle produces no duplicate jobs/events, restart recovery (new Scheduler instance on same DB self-heals downstream), changed fingerprint → new generation without lifecycle regress, refresh run on SEARCHABLE asset, scheduler-state persistence, `run_forever` stop, synthetic unattended full E2E (DISCOVER→…→SEARCHABLE, zero manual downstream enqueues), and real C10 video+album offline chains through real adapters into disposable M5 stores.
+- Real verification: targeted `pytest tests/test_operations_store.py tests/test_operations_worker.py tests/test_operations_stages.py tests/test_operations_scheduler.py` = 230 passed; full `pytest tests -q` = 1495 passed / 10 skipped. No production `data/operations/operations.sqlite3` created, no production `data/knowledge/knowledge_store.sqlite3` modified (disposable temp DBs only), no network/GPU/LLM/live Douyin; M2–M5 production code untouched.
 
 ---
 
