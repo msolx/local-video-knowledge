@@ -340,6 +340,39 @@ def test_douyin_collector_with_stubs(tmp_path: Path):
     assert res_sync.status == CollectorStatus.SUCCESS
 
 
+def test_douyin_collector_initialize_with_profile_path_no_runtime(tmp_path: Path):
+    """Regression: initialize() must not crash when profile_path is set but no
+    browser_runtime is injected (production branch previously raised
+    NameError: name 'Path' is not defined in collector.py)."""
+    config = DouyinCollectorConfig(
+        runtime_root=tmp_path / "rt",
+        profile_path=str(tmp_path / "chrome-profile"),
+    )
+    collector = DouyinCollector(config=config)
+    collector.initialize("run_regression_profile_path")
+    assert collector.browser_runtime is None
+
+
+def test_douyin_collector_initialize_wires_runtime_when_profile_exists(tmp_path: Path):
+    """initialize() wires DouyinBrowserRuntimeProvider when profile_path exists
+    and no runtime is injected, without spawning a real browser."""
+    profile = tmp_path / "chrome-profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    config = DouyinCollectorConfig(
+        runtime_root=tmp_path / "rt",
+        profile_path=str(profile),
+    )
+    collector = DouyinCollector(config=config)
+    with patch(
+        "src.collector.douyin.browser_runtime.DouyinBrowserRuntimeProvider"
+    ) as fake_runtime_cls:
+        fake_runtime_cls.return_value.is_running.return_value = False
+        fake_runtime_cls.return_value.launch.return_value = None
+        collector.initialize("run_regression_profile_launch")
+    assert collector.browser_runtime is not None
+    fake_runtime_cls.return_value.launch.assert_called_once()
+
+
 # =====================================================================
 # 7. Secret Logging Regression Tests
 # =====================================================================

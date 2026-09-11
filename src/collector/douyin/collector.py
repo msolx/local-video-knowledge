@@ -14,6 +14,7 @@ Implements BaseCollector and maps dependency injection slots for subsequent engi
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from ..base import BaseCollector, CollectorMode, CollectorRunResult, CollectorStatus, utcnow_iso
