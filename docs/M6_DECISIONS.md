@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 .. M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 .. M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -256,3 +256,39 @@
 ## Decision 42: Scheduler Events Are Mutation-Delimited (M6-04)
 - **Context**: A poll scheduler running every cycle must not flood `event_log` with idle ticks.
 - **Decision**: Scheduler writes append-only events only on actual mutations: poll scheduled (only when a poll job is newly created), assets registered, pipeline run created/completed/failed/cancelled, downstream job enqueued (only when created), lifecycle advanced, retry requeued, orchestration invariant failure. Idle cycles append nothing.
+
+---
+
+## Decision 43: Read-Only Observability Is a Pure Projection (M6-05)
+- **Context**: The control plane needs health/diagnostics, but nothing in observability may become a second copy of truth.
+- **Decision**: `src/operations/observability.py` is a pure read projection over `assets`, `pipeline_runs`, `jobs`, `job_attempts`, `workers`, `event_log`. It never writes; it derives `AssetPipelineStatus`, `WorkerStatus`, `OperationsSummary` and asset timelines from durable rows only. It can never emit a `lease_token` (explicit field allowlist). Health vocabulary is frozen: `HEALTHY, RUNNING, WAITING_FOR_WORKER, WAITING_RETRY, SUCCEEDED, FAILED_TERMINAL, CANCELLED, STALLED, INVARIANT_ERROR`.
+
+---
+
+## Decision 44: Manual-Attention Health Is Explicit (M6-05)
+- **Context**: Operators must know which states require a human, not just the scheduler.
+- **Decision**: `MANUAL_ATTENTION_HEALTH = {STALLED, INVARIANT_ERROR, FAILED_TERMINAL}`. Everything else (`WAITING_RETRY`, `WAITING_FOR_WORKER`, `RUNNING`, lease recovery, requeue, worker rejoin) is `AUTO_RECOVER`. `AssetPipelineStatus.needs_attention`/`attention_reason` expose the boundary; health is never derived from the human `workers.status` column alone.
+
+---
+
+## Decision 45: Admin Recovery Reuses Sealed Primitives (M6-05)
+- **Context**: `startup_recovery` and repair passes must not re-implement recovery rules.
+- **Decision**: `src/operations/admin.py` composes the frozen store primitives (`validate_operations_store`, `recover_expired_leases`, `requeue_retryable_job`, scheduler phase-2/phase-4 reconciliation) into `run_recovery_pass` / `startup_recovery`. `admin_retry_job` respects the frozen retry policy (backoff, exhaustion); terminal/exhausted retry requires `force=True` plus a valid new input fingerprint (new generation). `admin_cancel_job` wraps the additive `CANCELLED` terminal state. `RecoveryResult` is JSON-safe and excludes lease tokens.
+
+---
+
+## Decision 46: At-Least-Once Replay Proves Idempotency via Artifact Fingerprint (M6-05)
+- **Context**: A worker may crash after a handler side-effect but before completion commit; the retried run must not duplicate or corrupt.
+- **Decision**: Recovery treats retry as at-least-once replay. A retried stage adapter re-runs the handler; if the produced artifacts are fingerprint-identical to the previous attempt, the adapter returns `CACHE_HIT` (same `output_fingerprint`), and the completion commits exactly once. Replay correctness is proven by artifact identity, never by exit codes. Partial artifacts are never `CACHE_HIT`; corrupt artifacts are terminal (manual attention).
+
+---
+
+## Decision 47: Real-Data Incident Guard Is Mandatory for Destructive Tests (M6-05)
+- **Context**: The M4 C10 incident proved that a test-mode adapter running against the repository's real `data/processed` can overwrite sealed historical intermediates.
+- **Decision**: All M6-05 stage/recovery tests copy required artifacts to disposable `tmp_path` processed roots before running destructive adapters (`KnowledgeExtractAdapter`, `KnowledgeFinalizeAdapter`, `MediaProcessAdapter`, …). The generic guard `_guard_rejects_real_processed_root(target)` must reject the real `data/processed` tree; tests assert it. Production M5 store and M4 C10 historical artifacts are read-only in tests. The 69-KU forensic rerun is never production input. This guard is a regression test, not a bypass.
+
+---
+
+## Decision 48: CLI Is a Thin Secret-Scrubbed Presentation Layer (M6-05)
+- **Context**: Operators need status/admin commands without exposing secrets.
+- **Decision**: `src/operations/cli.py` is a thin presentation layer over observability + admin. Every subcommand accepts `--db` (env `OPERATIONS_DB_PATH` fallback) and `--json`. Every emitted job row passes through `_secret_free` (strips `lease_token`, cookies, API keys) before output. Commands: `status`, `asset`, `jobs`, `failed`, `workers`, `timeline`, `retry`, `cancel`, `recover`. No network / GPU / LLM runtime is ever started by the CLI.

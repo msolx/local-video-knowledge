@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`; `M6-05 = NEXT`; `M6-06..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`; `M6-06 = NEXT`; `M6-07..M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -109,17 +109,30 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ---
 
+## 5e. M6-05 Deliverables Completed
+
+- `src/operations/observability.py` — pure read-only health projection. Frozen health vocabulary (`HEALTHY/RUNNING/WAITING_FOR_WORKER/WAITING_RETRY/SUCCEEDED/FAILED_TERMINAL/CANCELLED/STALLED/INVARIANT_ERROR`) + `MANUAL_ATTENTION_HEALTH = {STALLED, INVARIANT_ERROR, FAILED_TERMINAL}`. Frozen `AssetPipelineStatus`, `WorkerStatus`, `OperationsSummary`. Functions: `get_asset_pipeline_status`, `list_asset_pipeline_statuses`, `get_worker_status`, `list_worker_statuses`, `compute_operations_summary` (incl. optional `validate_operations_store`), `get_asset_timeline`. Explicit field allowlist — can never emit a `lease_token`. Never writes.
+- `src/operations/admin.py` — explicit recovery + admin mutations (never read-only). `RecoveryResult` (`m6-recovery-result-v1`), `AdminRetryResult`, `AdminCancelResult`. `run_recovery_pass`/`startup_recovery` compose frozen primitives (validate → `recover_expired_leases` → scheduler phase-2 requeue → phase-4 reconcile; optional poll pass). `admin_retry_job` (backoff respected; terminal/exhausted requires `force` + valid new input fingerprint → new generation), `admin_cancel_job` (additive `CANCELLED`), `admin_requeue_asset`. Secrets never accepted/echoed.
+- `src/operations/cli.py` — thin secret-scrubbed presentation layer. Commands: `status`, `asset`, `jobs`, `failed`, `workers`, `timeline`, `retry`, `cancel`, `recover`. Every subcommand accepts `--db` (env `OPERATIONS_DB_PATH`) + `--json`. `_secret_free` strips `lease_token`/cookies/API keys before output. No network/GPU/LLM started.
+- `docs/M6_RECOVERY_RUNBOOK.md` — recovery matrix (16 scenarios with explicit AUTO_RECOVER/MANUAL_ATTENTION), startup recovery, observability vocabulary, admin ops, M4 incident destructive-root guard rule, secrets & event-spam policy.
+- Tests:
+  - `tests/test_operations_recovery.py` (32 tests) — fault matrix: scheduler crash windows A/B, worker crash before start / during run (recovery + exhaustion), network disconnect lease expiry, handler side-effect replay (at-least-once CACHE_HIT), admin retry/cancel semantics, duplicate discovery/enqueue suppression, PC offline→online, LLM unavailable backoff, DB lock retryable, hours/days-late requeue, partial artifact never cache-hit, corrupt artifact terminal, real C10 video+album offline recovery → SEARCHABLE into **disposable** M5 stores (copied processed roots), and M4 incident destructive-root guard regression tests (real `data/processed` rejected; disposable tmp roots allowed).
+  - `tests/test_operations_observability.py` — health classification, timeline, worker staleness, summary, real C10 status fixtures (read-only, disposable DBs).
+  - `tests/test_operations_cli.py` — all commands, `--json`, secret redaction, error paths.
+- Verification: targeted M6 suite (`store/worker/stages/scheduler/recovery/observability/cli`) = **302 passed**; incident acceptance (`test_m4_acceptance` + `test_m4_incident_recovery`) = **54 passed**; full `pytest tests -q` = **1588 passed / 10 skipped / 0 failed**. Live C10 unchanged (video 62 KU, album 6 KU); production M5 store unchanged (2 assets / 68 KU, revision `7b604b33…`). No production ops DB created; no network/GPU/LLM/live Douyin; M2–M5 production code unmodified.
+
+---
+
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-05 — Crash Recovery / Retry / Observability**
+**M6-06 — Windows PC Worker Autostart**
 
-- Objective: harden the scheduler + worker runtime against real crash/interruption scenarios and surface observability for the NAS control plane (the M6-04 scheduler is the durable driver; M6-05 adds the recovery/retry/observability surface the architecture doc's §27 recovery test plan calls for).
-- Reuse (all frozen): `src/operations/scheduler.py` (`Scheduler.run_once`/`run_forever`, phase-0 lease recovery + retry requeue, `SchedulerCycleResult`), `src/operations/store.py` (`recover_expired_leases`, `requeue_retryable_job`, `get_job_result`, `list_failed_jobs`, `list_pending_jobs`, `list_events`, `validate_operations_store`), `src/operations/worker.py` (`WorkerRuntime`), `src/operations/stages.py` (adapters).
-- Key contracts to exercise/prove: scheduler crash between job SUCCEEDED and lifecycle advance; worker crash after side-effect before commit (at-least-once replay); PC shutdown mid-ASR (lease expiry → retryable attempt accounting); network disconnect; duplicate discovery/enqueue; partial download; corrupted artifact (never cache-hit); LLM runtime unavailable; store ingest failure; restarts after hours/days. Admin surface: list pending/failed, retry, cancel, requeue, worker status, asset pipeline status.
-- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-04 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
-- Commit message: per M6-05 spec.
+- Objective: boot/login autostart for the PC worker (capability-based GPU/media/collector worker). Deployment contract only (architecture doc §24); service registration happens here, not in M6-00.
+- Reuse (all frozen): `src/operations/worker.py` (`WorkerRuntime.run_forever`), `src/operations/scheduler.py`, `src/operations/admin.py` (`startup_recovery`), `src/operations/store.py`.
+- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-05 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
+- Commit message: per M6-06 spec.
 
-Do not start M6-05 until it is explicitly requested; M6-04 is sealed above.
+Do not start M6-06 until it is explicitly requested; M6-05 is sealed above.
 
 ---
 

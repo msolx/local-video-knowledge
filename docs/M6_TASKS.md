@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05..M6-09 TODO.
+> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05 DONE; M6-06..M6-09 TODO.
 
 ---
 
@@ -13,7 +13,7 @@
 | M6-02 | DONE | Local Worker Runtime + Capability/Lease Protocol |
 | M6-03 | DONE | Pipeline Stage Adapters for M2→M5 |
 | M6-04 | DONE | Scheduler + Automatic Downstream Orchestration |
-| M6-05 | TODO | Crash Recovery / Retry / Observability |
+| M6-05 | DONE | Crash Recovery / Retry / Observability |
 | M6-06 | TODO | Windows PC Worker Autostart |
 | M6-07 | TODO | NAS Docker Control Plane Deployment |
 | M6-08 | TODO | Real Douyin Favorite → Searchable Knowledge E2E |
@@ -137,14 +137,28 @@ Scheduler (NAS) that polls collections, enqueues DISCOVER, and triggers downstre
 
 ---
 
-## M6-05: Crash Recovery / Retry / Observability (`TODO`)
+## M6-05: Crash Recovery / Retry / Observability (`DONE`)
 
 ### Objective
 Retry policy (RETRYABLE vs TERMINAL, attempt/max/backoff), lease expiry requeue, event_log, and admin/status surface.
 
 ### Scope hints
-- Recovery test plan from architecture doc §27 (scheduler crash, worker crash, PC shutdown during ASR, network disconnect, duplicate discovery/enqueue, lease expiry, partial download, corrupted artifact, LLM runtime unavailable, store ingest failure, restarts after hours/days).
+- Recovery test plan from architecture doc ·27 (scheduler crash, worker crash, PC shutdown during ASR, network disconnect, duplicate discovery/enqueue, lease expiry, partial download, corrupted artifact, LLM runtime unavailable, store ingest failure, restarts after hours/days).
 - Admin ops: list pending/failed, retry, cancel, requeue, worker status, asset pipeline status.
+
+### Deliverables
+- `src/operations/observability.py` — pure read-only health projection: frozen health vocabulary (`HEALTHY/RUNNING/WAITING_FOR_WORKER/WAITING_RETRY/SUCCEEDED/FAILED_TERMINAL/CANCELLED/STALLED/INVARIANT_ERROR`), `MANUAL_ATTENTION_HEALTH`, `AssetPipelineStatus`, `WorkerStatus`, `OperationsSummary`, `get_asset_pipeline_status`, `list_asset_pipeline_statuses`, `get_worker_status`, `list_worker_statuses`, `compute_operations_summary`, `get_asset_timeline`. Never writes; never emits `lease_token`.
+- `src/operations/admin.py` — `run_recovery_pass` / `startup_recovery` (compose frozen store primitives: validate → recover leases → requeue due retryables → reconcile runs), `admin_retry_job` (respects backoff/exhaustion; terminal requires `force` + new input fingerprint), `admin_cancel_job`, `admin_requeue_asset`; `RecoveryResult`/`AdminRetryResult`/`AdminCancelResult` JSON-safe.
+- `src/operations/cli.py` — thin secret-scrubbed CLI: `status`, `asset`, `jobs`, `failed`, `workers`, `timeline`, `retry`, `cancel`, `recover`; `--db` (env `OPERATIONS_DB_PATH`) + `--json`; `_secret_free` strips tokens.
+- `docs/M6_RECOVERY_RUNBOOK.md` — recovery matrix (16 scenarios, AUTO/MANUAL), startup recovery, observability vocabulary, admin ops, M4 incident guard rule.
+- Tests: `tests/test_operations_recovery.py` (32 tests incl. fault matrix + real C10 offline recovery to searchable on disposable roots + M4 incident destructive-root guard regression), `tests/test_operations_observability.py`, `tests/test_operations_cli.py`.
+
+### Verification
+- Targeted M6 suite (`store/worker/stages/scheduler/recovery/observability/cli`): 302 passed.
+- Incident acceptance (`test_m4_acceptance` + `test_m4_incident_recovery`): 54 passed.
+- Full regression `pytest tests -q`: 1588 passed / 10 skipped / 0 failed.
+- Live C10 unchanged (video 62 KU, album 6 KU); production M5 store unchanged (2 assets / 68 KU, revision `7b604b33…`).
+- No production ops DB created; no network / GPU / LLM / live Douyin used.
 
 ---
 
