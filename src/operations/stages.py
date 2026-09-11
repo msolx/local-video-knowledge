@@ -610,6 +610,50 @@ class ArchiveAdapter(StageAdapter):
 # ----------------------------------------------------------------------
 
 
+def _sync_processed_artifacts(src_dir: Path, dst_dir: Path) -> None:
+    """Atomically copy processed artifacts from src_dir to dst_dir.
+
+    Ensures:
+    - Atomicity via temporary files (.tmp.* replaced on completion)
+    - Destination SHA-256 matches source
+    - Existing identical files are idempotent (no re-copy)
+    - Lock files and temporary files are excluded
+    - Non-destructive: source files are read-only and never modified/deleted
+    """
+    import shutil
+
+    src_path = Path(src_dir)
+    dst_path = Path(dst_dir)
+    if not src_path.is_dir():
+        return
+    if src_path.resolve() == dst_path.resolve():
+        return
+
+    dst_path.mkdir(parents=True, exist_ok=True)
+    for item in src_path.iterdir():
+        if item.name.endswith(".lock") or item.name.startswith(".tmp."):
+            continue
+        dest = dst_path / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest, dirs_exist_ok=True)
+        elif item.is_file():
+            # Check idempotency
+            if dest.is_file() and dest.stat().st_size == item.stat().st_size:
+                if _sha256_file(dest) == _sha256_file(item):
+                    continue
+            tmp_dest = dst_path / f".tmp.{item.name}"
+            shutil.copy2(item, tmp_dest)
+            tmp_dest.replace(dest)
+            # Verify destination hash matches source
+            src_hash = _sha256_file(item)
+            dst_hash = _sha256_file(dest)
+            if src_hash != dst_hash:
+                dest.unlink(missing_ok=True)
+                raise IOError(
+                    f"Artifact sync hash mismatch for {item.name}: {src_hash} != {dst_hash}"
+                )
+
+
 class MediaProcessAdapter(StageAdapter):
     """Execute the M3 evidence build for a canonical asset (video or album).
 
@@ -724,11 +768,11 @@ class MediaProcessAdapter(StageAdapter):
         from ..pipeline import process_canonical_album, process_canonical_asset
 
         if getattr(asset, "is_video", False):
-            process_canonical_asset(
+            result = process_canonical_asset(
                 self.config, asset, force=self.force, stop_after="chunk"
             )
         elif getattr(asset, "is_album", False):
-            process_canonical_album(
+            result = process_canonical_album(
                 self.config, asset, force=self.force, stop_after="chunk"
             )
         else:
@@ -736,6 +780,10 @@ class MediaProcessAdapter(StageAdapter):
                 f"unsupported media content_type {content_type!r} for "
                 f"{claimed.platform_content_id}"
             )
+        if result is not None:
+            res_path = Path(result)
+            if res_path.resolve() != processed_dir.resolve() and res_path.is_dir():
+                _sync_processed_artifacts(res_path, processed_dir)
         if not self._evidence_valid(processed_dir):
             raise TerminalJobError(
                 "M3 processor reported success but evidence artifacts are not valid"

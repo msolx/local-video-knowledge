@@ -1090,3 +1090,134 @@ def test_real_c10_album_offline_cache_audit(tmp_path):
     assert result.status == STATUS_CACHE_HIT
     assert result.metadata["media_type"] == "album"
     assert is_valid_sha256(result.output_fingerprint)
+
+
+# ----------------------------------------------------------------------
+# Shared-artifact sync regression suite (_sync_processed_artifacts)
+# ----------------------------------------------------------------------
+
+
+class TestSyncProcessedArtifacts:
+    def test_sync_copied_atomically_and_hashes_match(self, tmp_path):
+        from src.operations.stages import _sha256_file, _sync_processed_artifacts
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        src.mkdir()
+        (src / "evidence_manifest.json").write_text('{"manifest": 1}', encoding="utf-8")
+        (src / "evidence_chunks.json").write_text('{"chunks": []}', encoding="utf-8")
+        (src / "audio.wav").write_bytes(b"RIFF....WAVEfmt ")
+
+        _sync_processed_artifacts(src, dst)
+
+        assert (dst / "evidence_manifest.json").is_file()
+        assert (dst / "evidence_chunks.json").is_file()
+        assert (dst / "audio.wav").is_file()
+
+        # Destination hashes match source
+        assert _sha256_file(dst / "evidence_manifest.json") == _sha256_file(src / "evidence_manifest.json")
+        assert _sha256_file(dst / "evidence_chunks.json") == _sha256_file(src / "evidence_chunks.json")
+        assert _sha256_file(dst / "audio.wav") == _sha256_file(src / "audio.wav")
+
+        # No temp files remain
+        assert not any(f.name.startswith(".tmp.") for f in dst.iterdir())
+
+    def test_sync_idempotent_existing_identical(self, tmp_path):
+        from src.operations.stages import _sync_processed_artifacts
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        src.mkdir()
+        (src / "test.txt").write_text("hello idempotent", encoding="utf-8")
+
+        _sync_processed_artifacts(src, dst)
+        mtime1 = (dst / "test.txt").stat().st_mtime
+
+        # Second sync should detect matching size + hash and skip re-copy
+        _sync_processed_artifacts(src, dst)
+        mtime2 = (dst / "test.txt").stat().st_mtime
+        assert mtime1 == mtime2
+
+    def test_sync_ignores_locks_and_temp_files(self, tmp_path):
+        from src.operations.stages import _sync_processed_artifacts
+
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        src.mkdir()
+        (src / "data.json").write_text("{}", encoding="utf-8")
+        (src / ".processing.lock").write_text("lock", encoding="utf-8")
+        (src / ".tmp.partial").write_text("partial", encoding="utf-8")
+
+        _sync_processed_artifacts(src, dst)
+
+        assert (dst / "data.json").is_file()
+        assert not (dst / ".processing.lock").exists()
+        assert not (dst / ".tmp.partial").exists()
+
+    def test_historical_c10_source_never_mutated(self, tmp_path):
+        from src.operations.stages import _sha256_file, _sync_processed_artifacts
+
+        src = tmp_path / "c10_src"
+        dst = tmp_path / "shared_dst"
+        src.mkdir()
+        (src / "evidence_manifest.json").write_text('{"immutable": true}', encoding="utf-8")
+        orig_hash = _sha256_file(src / "evidence_manifest.json")
+
+        _sync_processed_artifacts(src, dst)
+
+        # Source is 100% untouched
+        assert (src / "evidence_manifest.json").is_file()
+        assert _sha256_file(src / "evidence_manifest.json") == orig_hash
+
+    def test_path_translation_preserves_fingerprint(self, tmp_path):
+        from src.operations.models import JobStage
+        from src.operations.stages import (
+            STAGES_POLICY_VERSION,
+            MediaProcessAdapter,
+            stage_output_fingerprint,
+        )
+
+        local_root = tmp_path / "local"
+        shared_root = tmp_path / "shared"
+        canon_id = "douyin_test123"
+
+        for root in (local_root, shared_root):
+            p = root / canon_id
+            p.mkdir(parents=True)
+            (p / "evidence_manifest.json").write_text('{"id": 1}', encoding="utf-8")
+            (p / "evidence_chunks.json").write_text('{"chunks": []}', encoding="utf-8")
+
+        adapter_local = MediaProcessAdapter(processed_root=local_root)
+        adapter_shared = MediaProcessAdapter(processed_root=shared_root)
+
+        claimed = _FakeClaimed()
+        claimed.canonical_id = canon_id
+
+        art_local = adapter_local._evidence_artifacts(local_root / canon_id)
+        art_shared = adapter_shared._evidence_artifacts(shared_root / canon_id)
+
+        fp_local = stage_output_fingerprint(JobStage.MEDIA_PROCESS.value, art_local, policy_version=STAGES_POLICY_VERSION)
+        fp_shared = stage_output_fingerprint(JobStage.MEDIA_PROCESS.value, art_shared, policy_version=STAGES_POLICY_VERSION)
+
+        assert fp_local == fp_shared
+
+    def test_failed_copy_cannot_produce_valid_result(self, tmp_path, monkeypatch):
+        from src.operations.stages import MediaProcessAdapter
+
+        proc_dir = tmp_path / "processed"
+        adapter = MediaProcessAdapter(
+            processed_root=proc_dir,
+            media_adapter=FakeMediaAdapter(archive_root=tmp_path),
+            config="fake_config",
+        )
+        claimed = _FakeClaimed()
+        claimed.canonical_id = "douyin_fail_test"
+
+        # Mock process_canonical_asset to return a nonexistent dir
+        monkeypatch.setattr(
+            "src.pipeline.process_canonical_asset",
+            lambda *args, **kwargs: tmp_path / "nonexistent_src",
+        )
+
+        with pytest.raises(Exception):
+            adapter.execute(claimed)

@@ -725,6 +725,9 @@ class TestPowerShell:
         text = INSTALL_SCRIPT.read_text(encoding="utf-8")
         assert "RestartCount" in text
         assert "RestartInterval" in text
+        assert "$RestartCount = 999" in text
+        # Verify 999999 is not used (exceeds Task Scheduler schema limit)
+        assert "999999" not in text
 
     def test_uninstall_idempotency_design(self):
         text = UNINSTALL_SCRIPT.read_text(encoding="utf-8")
@@ -783,3 +786,91 @@ class TestInstallDryRun:
             timeout=60,
         )
         assert "absent" in check.stdout
+
+
+# ---------------------------------------------------------------------------
+# 9. Profile cookie provider security & non-persistence audit
+# ---------------------------------------------------------------------------
+
+
+class TestProfileCookieProviderSecurity:
+    def test_none_or_missing_profile_returns_empty(self, tmp_path):
+        from src.operations.windows_worker import _ProfileCookieProvider
+
+        provider_none = _ProfileCookieProvider(None)
+        assert provider_none.get_credentials() == {}
+
+        provider_missing = _ProfileCookieProvider(tmp_path / "nonexistent")
+        assert provider_missing.get_credentials() == {}
+
+    def test_corrupted_cookie_file_returns_empty_safely(self, tmp_path):
+        from src.operations.windows_worker import _ProfileCookieProvider
+
+        fake_profile = tmp_path / "fake_profile"
+        cookie_dir = fake_profile / "Default" / "Network"
+        cookie_dir.mkdir(parents=True)
+        (cookie_dir / "Cookies").write_bytes(b"garbage-data-not-sqlite")
+        (fake_profile / "Local State").write_text("{}", encoding="utf-8")
+
+        provider = _ProfileCookieProvider(fake_profile)
+        # Must gracefully handle any exception and return empty dict without raising
+        result = provider.get_credentials()
+        assert result == {}
+
+    def test_wrap_archive_with_source_url_no_cookie_leak(self):
+        from datetime import datetime, timezone
+        from src.operations.models import ClaimedJob
+        from src.operations.stages import StageExecutionResult
+        from src.operations.windows_worker import _with_source_url
+
+        captured_jobs: list[ClaimedJob] = []
+
+        def dummy_handler(job: ClaimedJob) -> StageExecutionResult:
+            captured_jobs.append(job)
+            return StageExecutionResult(
+                stage="ARCHIVE",
+                canonical_id=job.canonical_id,
+                status="SUCCEEDED",
+                input_fingerprint="fp_in",
+                output_fingerprint="fp_out",
+                metadata={"archive_path": "/fake/archive"},
+            )
+
+        wrapped = _with_source_url(dummy_handler)
+        job = ClaimedJob(
+            job_id="job_sec_test",
+            stage="ARCHIVE",
+            canonical_id="douyin_7660044343020916006",
+            platform="douyin",
+            platform_content_id="7660044343020916006",
+            input_fingerprint="fp_in",
+            required_capabilities=frozenset(["network"]),
+            lease_owner="worker_test",
+            leased_at="2026-09-11T10:00:00Z",
+            lease_expires_at="2026-09-11T10:10:00Z",
+            _lease_token="lease_secret_token",
+            metadata={},
+        )
+        res = wrapped(job)
+        assert res.status == "SUCCEEDED"
+        assert len(captured_jobs) == 1
+        assert captured_jobs[0].metadata.get("source_url") == "https://www.douyin.com/video/7660044343020916006"
+        assert "cookie" not in res.metadata
+        assert "sessionid" not in str(res.metadata)
+        assert "passport_csrf_token" not in str(res.metadata)
+
+    def test_cookie_provider_does_not_mutate_or_copy_profile(self, tmp_path):
+        """Audit requirement: profile path may be configured, but profile contents
+        are never copied into repo, data, or stage outputs."""
+        fake_profile = tmp_path / "browser_profile"
+        fake_profile.mkdir()
+        secret_file = fake_profile / "sensitive_data.txt"
+        secret_file.write_text("dummy-secret-marker", encoding="utf-8")
+
+        from src.operations.windows_worker import _ProfileCookieProvider
+        provider = _ProfileCookieProvider(fake_profile)
+        provider.get_credentials()
+
+        # Confirm nothing was copied out of fake_profile
+        assert secret_file.exists()
+        assert list(tmp_path.iterdir()) == [fake_profile]

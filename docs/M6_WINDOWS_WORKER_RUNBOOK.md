@@ -158,7 +158,7 @@ An uncaught host-level exception is logged (redacted) and exits **5**. The host 
 
 - **Trigger**: **At Log On** (`RunLevel Limited`, interactive user). Rationale: the collector needs the interactive Windows session (Chrome + profile). If a project audit later proves the host can run without a user session, a boot trigger may be reconsidered.
 - **Startup delay**: 45 s default (configurable `-StartupDelaySeconds`), letting G:, the user profile and runtime environment settle. The delay is an install parameter, not scattered.
-- **Restart policy**: restart on failure every 1 minute (`-RestartIntervalMinutes`) with a high count (`-RestartCount 999999`); settings allow starting on battery and never stop on battery; no execution-time limit (long-running host). This avoids a per-second crash loop while keeping the host alive across days.
+- **Restart policy**: restart on failure every 1 minute (`-RestartIntervalMinutes`) with a high count (`-RestartCount 999`, the maximum supported by Windows Task Scheduler schema); settings allow starting on battery and never stop on battery; no execution-time limit (long-running host). This avoids a per-second crash loop while keeping the host alive across days.
 - **Exact execution command**: the repository venv Python (e.g. `G:\local_pc_project\personal-knowledge-pipeline\.venv\Scripts\python.exe -m src.operations.windows_worker run --config …`) with `WorkingDirectory` = repository root — never the system PATH / default python / shell profile.
 - **Power settings**: the host does not block Windows sleep.
 

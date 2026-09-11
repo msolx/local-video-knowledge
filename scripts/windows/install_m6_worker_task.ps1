@@ -23,7 +23,7 @@ Delay after logon before the task starts. Default: 45.
 Restart interval on failure (Task Scheduler). Default: 1.
 
 .PARAMETER RestartCount
-Max restarts on failure. Default: 999999 (unlimited by Task Scheduler policy).
+Max restarts on failure. Default: 999 (maximum supported by Windows Task Scheduler schema).
 
 .PARAMETER Apply
 Actually register the task. WITHOUT this flag the script is a strict dry-run.
@@ -36,7 +36,7 @@ param(
     [string]$TaskName = "PkpM6WindowsWorker",
     [int]$StartupDelaySeconds = 45,
     [int]$RestartIntervalMinutes = 1,
-    [int]$RestartCount = 999999,
+    [int]$RestartCount = 999,
     [switch]$Apply
 )
 
@@ -56,10 +56,16 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
     Write-Error "venv Python not found: $VenvPython"
     exit 2
 }
-& $VenvPython -m src.operations.windows_worker print-config --config $Config *> $null
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "config validation failed (exit $LASTEXITCODE)"
-    exit 2
+Push-Location $RepoRoot
+try {
+    & $VenvPython -m src.operations.windows_worker print-config --config $Config *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "config validation failed (exit $LASTEXITCODE)"
+        exit 2
+    }
+}
+finally {
+    Pop-Location
 }
 
 $TaskArguments = "`"-File`" `"$WorkerScript`" -Config `"$Config`" -Command run"

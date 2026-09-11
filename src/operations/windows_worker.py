@@ -1025,6 +1025,36 @@ def _with_source_url(
     return _wrapped
 
 
+class _ProfileCookieProvider:
+    """Extracts in-memory session cookies from the dedicated browser profile."""
+
+    def __init__(self, profile_path: Optional[str | Path] = None) -> None:
+        self.profile_path = Path(profile_path) if profile_path else None
+
+    def get_credentials(self, scope_id: Any = None) -> dict[str, str]:
+        if not self.profile_path or not self.profile_path.is_dir():
+            return {}
+        try:
+            import browser_cookie3
+
+            cookie_file = self.profile_path / "Default" / "Network" / "Cookies"
+            key_file = self.profile_path / "Local State"
+            if not cookie_file.is_file():
+                return {}
+            cj = browser_cookie3.chrome(
+                cookie_file=str(cookie_file),
+                key_file=str(key_file) if key_file.is_file() else None,
+                domain_name="douyin.com",
+            )
+            cookie_dict = {c.name: c.value for c in cj}
+            if not cookie_dict:
+                return {}
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+            return {"cookie": cookie_str}
+        except Exception:
+            return {}
+
+
 def build_production_handler_registry(
     config: WorkerHostConfig,
     *,
@@ -1097,12 +1127,20 @@ def build_production_handler_registry(
         )
 
     if downloader is None:
+        # F2 isolation invariant: .venv must not have f2 installed.
+        # Dynamically inject the dedicated .venv-f2 site-packages for worker download execution.
+        repo_root = Path(__file__).resolve().parents[2]
+        venv_f2_site = repo_root / ".venv-f2" / "Lib" / "site-packages"
+        if venv_f2_site.is_dir() and str(venv_f2_site) not in sys.path:
+            sys.path.insert(0, str(venv_f2_site))
+
         archive_root = (
             Path(config.archive_root)
             if config.archive_root
             else workspace / "data" / "raw_archive"
         )
         downloader = SafeDouyinDownloader(
+            credential_provider=_ProfileCookieProvider(profile),
             sandbox_provider=ProductionTaskSandboxProvider(),
             backend=F2InProcessBackendAdapter(),
             normalizer=ProductionAssetNormalizer(),
