@@ -229,6 +229,8 @@ _WINDOWS_WORKER_EXPORTS = frozenset(
         "WindowsWorkerHost",
         "HostStartResult",
         "windows_worker_main",
+        "PRODUCTION_HANDLER_REGISTRY_VERSION",
+        "build_production_handler_registry",
     }
 )
 

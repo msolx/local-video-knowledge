@@ -41,6 +41,16 @@ from .transport import LocalSQLiteWorkerTransport
 from .worker import WorkerRuntime
 
 # ----------------------------------------------------------------------
+# M6-08 production integration markers
+# ----------------------------------------------------------------------
+
+PRODUCTION_HANDLER_REGISTRY_VERSION = "m6-08-prod-handlers-v1"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+# ----------------------------------------------------------------------
 # Frozen M6-06/M6-07 contracts
 # ----------------------------------------------------------------------
 
@@ -967,6 +977,192 @@ class WindowsWorkerHost:
                     pass
 
 
+class _CollectorModeAdapter:
+    """Adapt the frozen ``DiscoverAdapter`` calling convention to ``CollectorService``.
+
+    ``DiscoverAdapter.execute`` invokes ``collector.execute(mode, platform=...)``
+    with ``mode`` as a plain string (``"sync"``); the frozen
+    ``CollectorService.execute`` requires a ``CollectorMode`` enum. This thin
+    adapter normalizes string -> enum without touching sealed collector code.
+    """
+
+    def __init__(self, service: Any) -> None:
+        self._service = service
+
+    def execute(self, mode: Any, **kwargs: Any) -> Any:
+        from ..collector.base import CollectorMode
+
+        if isinstance(mode, str):
+            mode = CollectorMode(mode)
+        return self._service.execute(mode, **kwargs)
+
+
+def _with_source_url(
+    handler: Callable[[Any], Any],
+) -> Callable[[Any], Any]:
+    """Wrap an ARCHIVE handler so a missing ``source_url`` gets the frozen Douyin URL.
+
+    The scheduler enqueues ARCHIVE jobs with metadata ``{discover_job_id,
+    discovery_generation}`` only; the frozen ``ArchiveAdapter`` requires
+    ``claimed.metadata.source_url``. The frozen Douyin convention (transform.py /
+    download_queue.py) derives it deterministically as
+    ``https://www.douyin.com/video/{platform_content_id}``. This wrapper injects
+    that value into a copy of the claimed job, leaving all sealed modules
+    untouched.
+    """
+
+    from dataclasses import replace
+
+    def _wrapped(claimed: Any) -> Any:
+        meta = dict(getattr(claimed, "metadata", {}) or {})
+        if "source_url" not in meta:
+            cid = getattr(claimed, "platform_content_id", None)
+            if cid:
+                meta["source_url"] = f"https://www.douyin.com/video/{cid}"
+                claimed = replace(claimed, metadata=meta)
+        return handler(claimed)
+
+    return _wrapped
+
+
+def build_production_handler_registry(
+    config: WorkerHostConfig,
+    *,
+    app_config: Any = None,
+    collector: Any = None,
+    downloader: Any = None,
+    media_adapter: Any = None,
+    llm_backend: Any = None,
+    extraction_config: Any = None,
+    merge_config: Any = None,
+    enrichment_config: Any = None,
+    render_config: Any = None,
+) -> dict[str, Callable[[Any], Any]]:
+    """Build the real M2/M3/M4 handler registry for the Windows production worker.
+
+    M6-08 production integration (``m6-08-prod-handlers-v1``): wires the frozen
+    runtime components into the frozen ``build_stage_handler_registry``:
+
+    - DISCOVER: real Douyin collector (``CollectorService`` + ``DouyinCollector``)
+      behind a string-mode normalizing adapter.
+    - ARCHIVE: real ``SafeDouyinDownloader`` (F2 backend, production sandbox /
+      normalizer / validator / promoter / router) with the deterministic
+      ``source_url`` injection wrapper.
+    - MEDIA_PROCESS / KNOWLEDGE_EXTRACT: real ``CanonicalMediaAssetAdapter``,
+      ``AppConfig`` (config/config.json) and an LM Studio backend.
+    - KNOWLEDGE_FINALIZE / STORE_INGEST: built for completeness but only ever
+      claimed by the NAS local worker (placement enforced by the control plane).
+
+    All heavy imports are lazy so ``import src.operations.windows_worker`` never
+    pulls the M2/M3/M4 runtime stack. Every component may be overridden for tests.
+    """
+    from ..config import load_config
+    from ..collector.douyin.collector import DouyinCollector
+    from ..collector.douyin.config import DouyinCollectorConfig
+    from ..collector.service import CollectorService
+    from ..downloader.f2_backend import F2InProcessBackendAdapter
+    from ..downloader.normalizer import ProductionAssetNormalizer
+    from ..downloader.promoter import ProductionArchivePromoter
+    from ..downloader.router import ProductionContentRouter
+    from ..downloader.safe_downloader import SafeDouyinDownloader
+    from ..downloader.sandbox import ProductionTaskSandboxProvider
+    from ..downloader.validator import ProductionMediaValidator
+    from ..knowledge.enrichment import EnrichmentConfig
+    from ..knowledge.extractor import ExtractionConfig, OpenAICompatibleBackend
+    from ..knowledge.merger import MergeConfig
+    from ..knowledge.render import RenderConfig
+    from ..media_adapter.adapter import CanonicalMediaAssetAdapter
+    from .models import JobStage
+    from .stages import build_stage_handler_registry
+
+    if app_config is None:
+        app_config = load_config(str(_repo_root() / "config" / "config.json"))
+
+    workspace = Path(config.workspace_root) if config.workspace_root else Path(".")
+    refs = dict(config.runtime_references or {})
+    profile = refs.get("browser_profile")
+
+    if collector is None:
+        collector_cfg = DouyinCollectorConfig(
+            platform="douyin",
+            runtime_root=workspace / "runtime",
+            raw_archive_root=workspace / "data" / "raw",
+            canonical_root=workspace / "data" / "canonical",
+            database_path=workspace / "data" / "metadata.db",
+            profile_path=Path(profile) if profile else None,
+            headless=True,
+        )
+        collector = _CollectorModeAdapter(
+            CollectorService(DouyinCollector(config=collector_cfg))
+        )
+
+    if downloader is None:
+        archive_root = (
+            Path(config.archive_root)
+            if config.archive_root
+            else workspace / "data" / "raw_archive"
+        )
+        downloader = SafeDouyinDownloader(
+            sandbox_provider=ProductionTaskSandboxProvider(),
+            backend=F2InProcessBackendAdapter(),
+            normalizer=ProductionAssetNormalizer(),
+            validator=ProductionMediaValidator(),
+            promoter=ProductionArchivePromoter(archive_root=archive_root),
+            router=ProductionContentRouter(),
+            require_auth=False,
+        )
+
+    if media_adapter is None:
+        media_adapter = CanonicalMediaAssetAdapter(archive_root=config.archive_root)
+
+    if extraction_config is None or enrichment_config is None:
+        llm_cfg = (app_config.raw.get("llm") or {}).get("lm_studio") or {}
+        model = str(llm_cfg.get("model", "qwen3-8b"))
+        base_url = str(llm_cfg.get("base_url", "http://127.0.0.1:12345/v1"))
+        temperature = float(llm_cfg.get("temperature", 0.1))
+        max_tokens = int(llm_cfg.get("max_tokens", 4096))
+        extraction_config = ExtractionConfig(
+            backend="openai_compatible",
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=300,
+            force=False,
+        )
+        enrichment_config = EnrichmentConfig(
+            backend="openai_compatible",
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=300,
+            force=False,
+        )
+
+    if llm_backend is None:
+        llm_backend = OpenAICompatibleBackend(extraction_config)
+
+    registry = build_stage_handler_registry(
+        workspace_root=workspace,
+        processed_root=config.processed_root,
+        archive_root=config.archive_root,
+        knowledge_store_path=config.knowledge_store_path,
+        collector=collector,
+        downloader=downloader,
+        media_adapter=media_adapter,
+        app_config=app_config,
+        llm_backend=llm_backend,
+        extraction_config=extraction_config,
+        merge_config=merge_config or MergeConfig(),
+        enrichment_config=enrichment_config,
+        render_config=render_config or RenderConfig(),
+        force=False,
+    )
+    registry[JobStage.ARCHIVE.value] = _with_source_url(registry[JobStage.ARCHIVE.value])
+    return registry
+
+
 def redact_worker_registration(registration: dict[str, Any]) -> dict[str, Any]:
     """Strip worker registration dict of secret-shaped keys."""
     return _redact_value(dict(registration))
@@ -1065,7 +1261,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # run
     logger = configure_worker_logging(config)
-    host = WindowsWorkerHost(config, logger=logger)
+    handler_registry = None
+    if config.control_plane_transport == CONTROL_PLANE_TRANSPORT_FUTURE:
+        handler_registry = build_production_handler_registry
+    host = WindowsWorkerHost(config, logger=logger, handler_registry=handler_registry)
     result = host.start()
     logger.info("worker host exit_code=%d", result.exit_code)
     return result.exit_code

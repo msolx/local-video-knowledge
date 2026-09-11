@@ -479,3 +479,21 @@ def test_error_contract_never_leaks_token():
     text = json.dumps(err)
     assert "lease_secret" not in text
     assert "traceback" not in text.lower()
+
+
+def test_base_url_accepts_positional_argument():
+    # Deployment regression (M6-08): the Windows worker host builds
+    # HttpWorkerTransport(config.control_plane_url, ...) positionally;
+    # base_url must be POSITIONAL_OR_KEYWORD, not keyword-only.
+    from src.operations.http_transport import HttpWorkerTransport, RemoteUnavailableError
+
+    t = HttpWorkerTransport(
+        "http://127.0.0.1:1",
+        auth_token="unused-test-token",
+        worker_id="w",
+        connect_retries=1,
+    )
+    assert t.base_url == "http://127.0.0.1:1"
+    assert t.worker_id == "w"
+    with pytest.raises(RemoteUnavailableError):
+        t.health_ready()

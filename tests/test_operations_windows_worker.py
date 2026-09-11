@@ -571,6 +571,115 @@ class TestSafety:
 
 
 # ---------------------------------------------------------------------------
+# 6b. Production handler registry (M6-08)
+# ---------------------------------------------------------------------------
+
+
+class TestProductionHandlerRegistry:
+    def test_production_registry_returns_all_six_stages(self, tmp_path: Path):
+        config = WorkerHostConfig.from_dict(
+            _base_config(
+                "prod-worker",
+                workspace_root=str(tmp_path),
+                archive_root=str(tmp_path / "archive"),
+                processed_root=str(tmp_path / "processed"),
+                control_plane_transport=CONTROL_PLANE_TRANSPORT_FUTURE,
+                control_plane_url="http://127.0.0.1:1",
+                runtime_references={
+                    "browser_profile": str(tmp_path / "profile"),
+                    "browser_executable": str(tmp_path / "chrome.exe"),
+                    "asr_runtime": str(tmp_path / "runtime"),
+                    "vlm_runtime": str(tmp_path / "runtime"),
+                    "llm_runtime": str(tmp_path / "llama"),
+                    "llm_model_root": str(tmp_path / "models"),
+                },
+            )
+        )
+        from src.operations.windows_worker import build_production_handler_registry
+
+        registry = build_production_handler_registry(config)
+        assert set(registry.keys()) == {
+            "DISCOVER",
+            "ARCHIVE",
+            "MEDIA_PROCESS",
+            "KNOWLEDGE_EXTRACT",
+            "KNOWLEDGE_FINALIZE",
+            "STORE_INGEST",
+        }
+
+    def test_registry_injects_deterministic_source_url_on_archive(self, tmp_path: Path):
+        from dataclasses import dataclass, field
+
+        from src.operations.windows_worker import _with_source_url
+
+        calls = []
+
+        def _fake_handler(claimed):
+            calls.append(claimed)
+            return "handled"
+
+        wrapped = _with_source_url(_fake_handler)
+
+        @dataclass
+        class _FakeClaimed:
+            metadata: dict = field(default_factory=dict)
+            platform_content_id: str = "7681603850364521734"
+
+        result = wrapped(_FakeClaimed(metadata={}))
+        assert result == "handled"
+        assert calls[0].metadata["source_url"] == "https://www.douyin.com/video/7681603850364521734"
+
+    def test_registry_keeps_existing_source_url_on_archive(self):
+        from dataclasses import dataclass, field
+
+        from src.operations.windows_worker import _with_source_url
+
+        calls = []
+
+        def _fake_handler(claimed):
+            calls.append(claimed)
+            return "handled"
+
+        wrapped = _with_source_url(_fake_handler)
+
+        @dataclass
+        class _FakeClaimed:
+            metadata: dict = field(default_factory=dict)
+            platform_content_id: str = "7681603850364521734"
+
+        wrapped(_FakeClaimed(metadata={"source_url": "https://example.com/custom"}))
+        assert calls[0].metadata["source_url"] == "https://example.com/custom"
+
+    def test_registry_requires_source_url_field_not_mutated_in_place(self):
+        from dataclasses import dataclass, field
+
+        from src.operations.windows_worker import _with_source_url
+
+        @dataclass
+        class _FakeClaimed:
+            metadata: dict = field(default_factory=dict)
+            platform_content_id: str = "abc123"
+
+        original = _FakeClaimed(metadata={"x": 1})
+        wrapped = _with_source_url(lambda claimed: None)
+        wrapped(original)
+        assert "source_url" not in original.metadata
+        assert original.metadata == {"x": 1}
+
+    def test_registry_available_as_cli_handler_registry(self):
+        import inspect
+
+        from src.operations.windows_worker import (
+            PRODUCTION_HANDLER_REGISTRY_VERSION,
+            build_production_handler_registry,
+        )
+
+        assert PRODUCTION_HANDLER_REGISTRY_VERSION == "m6-08-prod-handlers-v1"
+        params = inspect.signature(build_production_handler_registry).parameters
+        assert "config" in params
+
+
+# ---------------------------------------------------------------------------
 # 7. PowerShell autostart artifacts
 # ---------------------------------------------------------------------------
 

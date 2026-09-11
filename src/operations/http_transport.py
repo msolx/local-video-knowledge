@@ -247,8 +247,8 @@ class HttpWorkerTransport:
 
     def __init__(
         self,
-        *,
         base_url: str,
+        *,
         auth_token_env: str = _DEFAULT_AUTH_TOKEN_ENV,
         auth_token: Optional[str] = None,
         worker_id: Optional[str] = None,

@@ -207,6 +207,7 @@ class DouyinSyncEngine:
         known_items = 0
         reappeared_items = 0
         duplicate_in_run = 0
+        discovered_items: list[str] = []
 
         stop_decision: StopDecision | None = None
         last_page: CollectionPage | None = None
@@ -308,6 +309,7 @@ class DouyinSyncEngine:
                     if transform_result.is_first_observation:
                         page_new += 1
                         new_items += 1
+                        discovered_items.append(transform_result.platform_content_id)
                     else:
                         page_known += 1
                         known_items += 1
@@ -363,6 +365,7 @@ class DouyinSyncEngine:
                 "known_items": known_items,
                 "reappeared_items": reappeared_items,
                 "duplicate_in_run": duplicate_in_run,
+                "discovered": list(discovered_items),
             }
             # Guaranteed rollback of staged items and preservation of watermark
             failed_run = self.repository.finalize_failure(
@@ -389,6 +392,7 @@ class DouyinSyncEngine:
             "known_items": known_items,
             "reappeared_items": reappeared_items,
             "duplicate_in_run": duplicate_in_run,
+            "discovered": list(discovered_items),
         }
 
         if dry_run:
