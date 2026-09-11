@@ -80,6 +80,9 @@ from .store import (
     complete_job_success,
     complete_job_retryable_failure,
     complete_job_terminal_failure,
+    find_active_claim,
+    replay_started_job,
+    replay_completed_job,
     recover_expired_leases,
     is_worker_stale,
     get_job_result,
@@ -158,12 +161,50 @@ from .admin import (
     admin_cancel_job,
     admin_requeue_asset,
 )
+from .transport import (
+    TransportError,
+    RemoteUnavailableError,
+    WorkerOperationsTransport,
+    LocalSQLiteWorkerTransport,
+)
+from .http_transport import (
+    CONTROL_PLANE_API_VERSION,
+    ERROR_CODE_AUTH_FAILED,
+    ERROR_CODE_VALIDATION_ERROR,
+    ERROR_CODE_NO_JOB,
+    ERROR_CODE_STALE_LEASE,
+    ERROR_CODE_CONFLICT,
+    ERROR_CODE_NOT_FOUND,
+    ERROR_CODE_SERVER_UNAVAILABLE,
+    ERROR_CODE_INVARIANT_ERROR,
+    ApiError,
+    AuthenticationError,
+    claimed_job_to_dict,
+    claimed_job_from_dict,
+    redact_job_payload,
+    HttpWorkerTransport,
+)
 
-# M6-06 Windows worker host is imported lazily (PEP 562 __getattr__) so that
-# `python -m src.operations.windows_worker` does not trigger the runpy
+# M6-06/M6-07 entrypoint modules (windows_worker, control_plane) are imported
+# lazily (PEP 562 __getattr__) so that `python -m src.operations.windows_worker`
+# and `python -m src.operations.control_plane` do not trigger the runpy
 # RuntimeWarning ("found in sys.modules after import of package ..."). The
 # public API surface is preserved: `from src.operations import ...` still
 # resolves the names below.
+
+_CONTROL_PLANE_EXPORTS = frozenset(
+    {
+        "CONTROL_PLANE_CONFIG_VERSION",
+        "CONTROL_PLANE_POLICY_VERSION",
+        "WINDOWS_STAGE_ALLOWLIST",
+        "NAS_STAGE_ALLOWLIST",
+        "DEFAULT_AUTH_TOKEN_ENV",
+        "ControlPlaneConfig",
+        "ControlPlaneService",
+        "run_control_plane",
+        "build_nas_local_handlers",
+    }
+)
 
 _WINDOWS_WORKER_EXPORTS = frozenset(
     {
@@ -199,6 +240,10 @@ def __getattr__(name: str):
         if name == "windows_worker_main":
             return _ww.main
         return getattr(_ww, name)
+    if name in _CONTROL_PLANE_EXPORTS:
+        from . import control_plane as _cp
+
+        return getattr(_cp, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -276,6 +321,9 @@ __all__ = [
     "complete_job_success",
     "complete_job_retryable_failure",
     "complete_job_terminal_failure",
+    "find_active_claim",
+    "replay_started_job",
+    "replay_completed_job",
     "recover_expired_leases",
     "is_worker_stale",
     "get_job_result",
@@ -369,4 +417,35 @@ __all__ = [
     "WindowsWorkerHost",
     "HostStartResult",
     "windows_worker_main",
+    # M6-07 Transport abstraction
+    "TransportError",
+    "RemoteUnavailableError",
+    "WorkerOperationsTransport",
+    "LocalSQLiteWorkerTransport",
+    # M6-07 HTTP transport
+    "CONTROL_PLANE_API_VERSION",
+    "ERROR_CODE_AUTH_FAILED",
+    "ERROR_CODE_VALIDATION_ERROR",
+    "ERROR_CODE_NO_JOB",
+    "ERROR_CODE_STALE_LEASE",
+    "ERROR_CODE_CONFLICT",
+    "ERROR_CODE_NOT_FOUND",
+    "ERROR_CODE_SERVER_UNAVAILABLE",
+    "ERROR_CODE_INVARIANT_ERROR",
+    "ApiError",
+    "AuthenticationError",
+    "claimed_job_to_dict",
+    "claimed_job_from_dict",
+    "redact_job_payload",
+    "HttpWorkerTransport",
+    # M6-07 NAS control plane
+    "CONTROL_PLANE_CONFIG_VERSION",
+    "CONTROL_PLANE_POLICY_VERSION",
+    "WINDOWS_STAGE_ALLOWLIST",
+    "NAS_STAGE_ALLOWLIST",
+    "DEFAULT_AUTH_TOKEN_ENV",
+    "ControlPlaneConfig",
+    "ControlPlaneService",
+    "run_control_plane",
+    "build_nas_local_handlers",
 ]

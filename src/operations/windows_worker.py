@@ -31,20 +31,31 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .http_transport import HttpWorkerTransport
 from .models import (
     VALID_CAPABILITIES,
     normalize_capabilities,
     normalize_identity_component,
 )
+from .transport import LocalSQLiteWorkerTransport
 from .worker import WorkerRuntime
 
 # ----------------------------------------------------------------------
-# Frozen M6-06 contracts
+# Frozen M6-06/M6-07 contracts
 # ----------------------------------------------------------------------
 
 WORKER_HOST_CONFIG_VERSION = "m6-windows-worker-config-v1"
 WORKER_PREFLIGHT_RESULT_VERSION = "m6-windows-worker-preflight-v1"
 WORKER_HOST_POLICY_VERSION = "m6-windows-worker-host-v1"
+
+#: Frozen M6-07 stage placement: Windows executes the discovery/archive/media/
+#: knowledge-extraction stages; the NAS owns finalize + store-ingest.
+WINDOWS_STAGE_ALLOWLIST: tuple[str, ...] = (
+    "DISCOVER",
+    "ARCHIVE",
+    "MEDIA_PROCESS",
+    "KNOWLEDGE_EXTRACT",
+)
 
 # Default Windows PC capability profile (M6-00 Topology A; PC owns browser +
 # GPU + local LLM). ``store_ingest`` is deliberately NOT declared: the M5
@@ -120,6 +131,11 @@ class WorkerHostConfig:
     display_name: Optional[str] = None
     hostname: Optional[str] = None
     control_plane_transport: str = CONTROL_PLANE_TRANSPORT_LOCAL
+    control_plane_url: Optional[str] = None
+    auth_token_env: str = "PKP_CONTROL_PLANE_TOKEN"
+    http_timeout_seconds: float = 30.0
+    reconnect_backoff_seconds: float = 1.0
+    allowed_stages: tuple[str, ...] = ()
     startup_delay_seconds: int = 45
     runtime_references: dict[str, Any] = field(default_factory=dict)
     extra_metadata: dict[str, Any] = field(default_factory=dict)
@@ -149,6 +165,11 @@ class WorkerHostConfig:
             "log_backup_count": self.log_backup_count,
             "single_instance_lock_path": self.single_instance_lock_path,
             "control_plane_transport": self.control_plane_transport,
+            "control_plane_url": self.control_plane_url,
+            "auth_token_env": self.auth_token_env,
+            "http_timeout_seconds": self.http_timeout_seconds,
+            "reconnect_backoff_seconds": self.reconnect_backoff_seconds,
+            "allowed_stages": list(self.allowed_stages),
             "startup_delay_seconds": self.startup_delay_seconds,
             "runtime_references": dict(self.runtime_references),
             "extra_metadata": dict(self.extra_metadata),
@@ -203,6 +224,24 @@ class WorkerHostConfig:
         if transport not in (CONTROL_PLANE_TRANSPORT_LOCAL, CONTROL_PLANE_TRANSPORT_FUTURE):
             raise ValueError(f"unsupported control_plane_transport {transport!r}")
 
+        control_plane_url = _opt_str("control_plane_url")
+        if transport == CONTROL_PLANE_TRANSPORT_FUTURE:
+            if not control_plane_url:
+                raise ValueError(
+                    "control_plane_transport=http requires control_plane_url"
+                )
+        allowed_stages_raw = raw.get("allowed_stages")
+        if allowed_stages_raw is None:
+            allowed_stages: tuple[str, ...] = ()
+        elif isinstance(allowed_stages_raw, list):
+            allowed_stages = tuple(
+                normalize_identity_component(str(s))
+                for s in allowed_stages_raw
+                if str(s).strip()
+            )
+        else:
+            raise ValueError("allowed_stages must be a list")
+
         runtime_refs = raw.get("runtime_references", {})
         if not isinstance(runtime_refs, dict):
             raise ValueError("runtime_references must be an object")
@@ -227,6 +266,11 @@ class WorkerHostConfig:
             display_name=_opt_str("display_name"),
             hostname=_opt_str("hostname"),
             control_plane_transport=transport,
+            control_plane_url=control_plane_url,
+            auth_token_env=_opt_str("auth_token_env") or "PKP_CONTROL_PLANE_TOKEN",
+            http_timeout_seconds=_opt_float("http_timeout_seconds", 30.0),
+            reconnect_backoff_seconds=_opt_float("reconnect_backoff_seconds", 1.0),
+            allowed_stages=allowed_stages,
             startup_delay_seconds=_opt_int("startup_delay_seconds", 45),
             runtime_references=dict(runtime_refs),
             extra_metadata=dict(raw.get("extra_metadata", {})),
@@ -400,6 +444,73 @@ def run_capability_preflight(config: WorkerHostConfig) -> WorkerPreflightResult:
         warnings.append(
             "store_ingest capability is owned by the NAS control-plane side in "
             "the frozen M6 topology; the Windows PC worker should not claim it"
+        )
+
+    if config.control_plane_transport == CONTROL_PLANE_TRANSPORT_FUTURE:
+        url = config.control_plane_url or ""
+        if not url:
+            checks.append(
+                PreflightCheck(
+                    name="http.control_plane_url",
+                    status="error",
+                    message="control_plane_transport=http requires control_plane_url",
+                )
+            )
+        elif not (url.startswith("http://") or url.startswith("https://")):
+            checks.append(
+                PreflightCheck(
+                    name="http.control_plane_url",
+                    status="error",
+                    message=f"invalid control_plane_url {url!r} (must be http(s)://)",
+                )
+            )
+        else:
+            checks.append(
+                PreflightCheck(
+                    name="http.control_plane_url",
+                    status="ok",
+                    message=f"url is a valid http(s) endpoint: {url}",
+                )
+            )
+        token_env = config.auth_token_env
+        token = os.environ.get(token_env)
+        if token:
+            checks.append(
+                PreflightCheck(
+                    name="http.auth_token_env",
+                    status="ok",
+                    message=f"auth token present in env {token_env}",
+                )
+            )
+        else:
+            checks.append(
+                PreflightCheck(
+                    name="http.auth_token_env",
+                    status="error",
+                    message=f"auth token env {token_env} is not set (production "
+                    "control plane fails closed without it)",
+                )
+            )
+        checks.append(
+            _check_path_exists(
+                "http.processed_root", config.processed_root, required=False
+            )
+        )
+        checks.append(
+            _check_path_exists(
+                "http.archive_root", config.archive_root, required=False
+            )
+        )
+        checks.append(
+            PreflightCheck(
+                name="http.connectivity",
+                status="warning",
+                message=(
+                    "server connectivity is checked at run time (bounded "
+                    "connectivity probe; a temporarily offline control plane "
+                    "is NOT a capability failure — the worker keeps retrying)"
+                ),
+            )
         )
 
     if not caps:
@@ -623,35 +734,39 @@ class WindowsWorkerHost:
     def _transport_errors(self) -> list[str]:
         """Transport validation for actually running the host.
 
-        ``local_sqlite_test`` is the only runnable transport in M6-06 (local-dev
-        / tests). ``http`` is a placeholder for M6-07/08 and fails closed here so
-        nobody runs a host that claims a remote transport that is not wired yet.
+        ``local_sqlite_test`` is a runnable local-dev/test transport.
+        ``http`` requires ``control_plane_url`` (remote control plane) and fails
+        closed when the URL is missing.
         """
 
         errors: list[str] = []
         transport = self.config.control_plane_transport
         if transport == CONTROL_PLANE_TRANSPORT_FUTURE:
-            errors.append(
-                "control_plane_transport=http is a placeholder and is not "
-                "implemented until M6-07/M6-08; cannot run the worker host on it"
-            )
+            if not self.config.control_plane_url:
+                errors.append(
+                    "control_plane_transport=http requires control_plane_url "
+                    "pointing at the NAS control plane"
+                )
         return errors
 
     def validate_production_topology(self) -> list[str]:
         """Production-readiness validation (used by M6-08 when the NAS control
         plane exists). Returns errors when the config is NOT acceptable as a
-        NAS production worker. A ``local_sqlite_test`` config always fails this
-        check (it is local-dev/test only); an SMB/UNC operations DB path always
-        fails too. ``start()`` runs a *subset* of these guards so local-dev
-        lifecycle still works: it hard-blocks SMB/UNC + unimplemented transport,
-        and warns (rather than blocks) on the local-only transport."""
+        NAS production worker.
+
+        - ``local_sqlite_test`` always fails (local-dev/test only).
+        - SMB/UNC operations DB path always fails.
+        - ``http`` with a valid control_plane_url is the production transport.
+        ``start()`` runs a *subset* of these guards so local-dev lifecycle still
+        works: it hard-blocks SMB/UNC + missing-URL http, and warns (rather than
+        blocks) on the local-only transport."""
 
         errors: list[str] = list(self._smb_guard_errors())
-        errors.append(
-            "control_plane_transport=local_sqlite_test is local-dev/test only "
-            "and cannot be used for a NAS production topology; wire 'http' "
-            "transport in M6-07/M6-08"
-        )
+        if self.config.control_plane_transport == CONTROL_PLANE_TRANSPORT_LOCAL:
+            errors.append(
+                "control_plane_transport=local_sqlite_test is local-dev/test only "
+                "and cannot be used for a NAS production topology"
+            )
         return errors
 
     def preflight(self) -> WorkerPreflightResult:
@@ -667,13 +782,33 @@ class WindowsWorkerHost:
         handlers: dict[str, Any] = {}
         if self.handler_registry is not None:
             handlers = self.handler_registry(self.config)
-        if not self.config.operations_db_path:
-            raise ValueError(
-                "operations_db_path is required to build the worker runtime "
-                "(fail closed; never auto-create the production operations DB)"
+        transport = self.config.control_plane_transport
+        if transport == CONTROL_PLANE_TRANSPORT_LOCAL:
+            if not self.config.operations_db_path:
+                raise ValueError(
+                    "operations_db_path is required to build the worker runtime "
+                    "in local_sqlite_test mode (fail closed; never auto-create "
+                    "the production operations DB)"
+                )
+            worker_transport = LocalSQLiteWorkerTransport(
+                self.config.operations_db_path
+            )
+        else:
+            if not self.config.control_plane_url:
+                raise ValueError(
+                    "control_plane_url is required to build the worker runtime "
+                    "in http mode (fail closed; the Windows worker never opens "
+                    "the NAS operations DB over SMB/UNC)"
+                )
+            worker_transport = HttpWorkerTransport(
+                self.config.control_plane_url,
+                auth_token_env=self.config.auth_token_env,
+                worker_id=self.config.worker_id,
+                http_timeout_seconds=self.config.http_timeout_seconds,
+                reconnect_backoff_seconds=self.config.reconnect_backoff_seconds,
             )
         kwargs: dict[str, Any] = {
-            "store_path": self.config.operations_db_path,
+            "transport": worker_transport,
             "worker_id": self.config.worker_id,
             "display_name": self.config.display_name,
             "hostname": self.config.hostname,
@@ -684,6 +819,9 @@ class WindowsWorkerHost:
             "poll_interval_seconds": self.config.poll_interval_seconds,
             "stale_threshold_seconds": self.config.worker_stale_threshold_seconds,
         }
+        allowed_stages = self.config.allowed_stages or WINDOWS_STAGE_ALLOWLIST
+        if allowed_stages:
+            kwargs["allowed_stages"] = list(allowed_stages)
         if self._now is not None:
             kwargs["now"] = self._now
         return self.runtime_factory(**kwargs)
@@ -730,18 +868,27 @@ class WindowsWorkerHost:
                 "arrives in M6-07/M6-08)"
             )
 
-        # 2. Fail closed: no operations_db_path -> no run. Never auto-create the
-        #    production data/operations/operations.sqlite3.
-        if not cfg.operations_db_path:
-            self.logger.error(
-                "operations_db_path is not configured; failing closed "
-                "(M6-06 worker host requires an explicit local-dev/test store; "
-                "the production operations DB is NAS-owned and must not be created here)"
-            )
-            return HostStartResult(
-                exit_code=EXIT_CONFIG_ERROR,
-                worker_id=cfg.worker_id,
-                error_message="operations_db_path is not configured (fail closed)",
+        # 2. Fail closed: local_sqlite_test needs an explicit local operations
+        #    DB; http mode must NOT touch any local operations DB. Never
+        #    auto-create the production data/operations/operations.sqlite3.
+        if cfg.control_plane_transport == CONTROL_PLANE_TRANSPORT_LOCAL:
+            if not cfg.operations_db_path:
+                self.logger.error(
+                    "operations_db_path is not configured; failing closed "
+                    "(M6-06/07 worker host requires an explicit local-dev/test "
+                    "store; the production operations DB is NAS-owned and must "
+                    "not be created here)"
+                )
+                return HostStartResult(
+                    exit_code=EXIT_CONFIG_ERROR,
+                    worker_id=cfg.worker_id,
+                    error_message="operations_db_path is not configured (fail closed)",
+                )
+        elif cfg.operations_db_path:
+            self.logger.warning(
+                "operations_db_path is set but control_plane_transport=http; "
+                "the Windows worker never opens the NAS operations DB over "
+                "SMB/UNC — ignoring the local path"
             )
 
         # 3. Preflight.

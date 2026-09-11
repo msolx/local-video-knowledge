@@ -1155,6 +1155,7 @@ def list_jobs(
     state: Optional[str] = None,
     stage: Optional[str] = None,
     canonical_id: Optional[str] = None,
+    lease_owner: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     conn = open_operations_store(Path(db_path))
     try:
@@ -1169,6 +1170,9 @@ def list_jobs(
         if canonical_id is not None:
             where.append("canonical_id = ?")
             params.append(normalize_identity_component(canonical_id))
+        if lease_owner is not None:
+            where.append("lease_owner = ?")
+            params.append(normalize_identity_component(lease_owner))
         sql = "SELECT * FROM jobs"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -1974,6 +1978,18 @@ def list_workers(db_path: Path) -> list[dict[str, Any]]:
         conn.close()
 
 
+def get_worker(db_path: Path, worker_id: str) -> Optional[dict[str, Any]]:
+    """Return a single worker record (metadata included) or None."""
+    conn = open_operations_store(Path(db_path))
+    try:
+        row = conn.execute(
+            "SELECT * FROM workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        return _row_dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 # ----------------------------------------------------------------------
 # M6-02 Capability-aware claim + lease protocol
 #
@@ -2029,6 +2045,7 @@ def claim_next_job(
     worker_id: str,
     capabilities: list[str],
     *,
+    allowed_stages: Optional[list[str]] = None,
     lease_duration_seconds: int = DEFAULT_LEASE_DURATION_SECONDS,
     now: Optional[str] = None,
 ) -> Optional[ClaimedJob]:
@@ -2038,6 +2055,8 @@ def claim_next_job(
       - state == QUEUED
       - retry deadline reached: ``next_retry_at`` is NULL or <= now
       - required_capabilities ⊆ worker capabilities (exact names; empty = generic)
+      - stage ∈ allowed_stages (additive M6-07 execution-placement filter;
+        None = no filter, preserving the M6-02 all-of capability rule exactly)
     Ordering: priority DESC, enqueued_at ASC, job_id ASC (deterministic v1).
 
     On success the job is moved QUEUED -> LEASED with a fresh lease token and
@@ -2068,6 +2087,8 @@ def claim_next_job(
             for job in rows:
                 required = _json_loads(job["required_capabilities_json"])
                 if not _capability_match(required, caps):
+                    continue
+                if allowed_stages is not None and job["stage"] not in allowed_stages:
                     continue
                 conn.execute(
                     """
@@ -2107,6 +2128,137 @@ def claim_next_job(
         except BaseException:
             conn.rollback()
             raise
+    finally:
+        conn.close()
+
+
+def find_active_claim(
+    db_path: Path,
+    worker_id: str,
+    *,
+    now: Optional[str] = None,
+) -> Optional[ClaimedJob]:
+    """Return this worker's existing unexpired LEASED claim, if any.
+
+    Solution B for the P0 "lost claim response" case: if the server already
+    committed QUEUED -> LEASED but the HTTP response was lost before it reached
+    the worker, a retried claim must NOT claim a second job and leave the first
+    one orphaned LEASED. This helper is checked BEFORE ``claim_next_job`` so a
+    repeat claim returns the same job with the same lease (and the same
+    ``lease_token``), guaranteeing "retry -> same job_id / same lease -> exactly
+    one leased job".
+
+    Returns None when the worker holds no unexpired LEASED job.
+    """
+    db_path = Path(db_path)
+    now = now or utc_now_iso()
+    worker_id = normalize_identity_component(worker_id)
+
+    conn = open_operations_store(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE state = ? AND lease_owner = ? AND lease_expires_at > ?
+            ORDER BY leased_at ASC, job_id ASC
+            LIMIT 1
+            """,
+            (JobState.LEASED.value, worker_id, now),
+        ).fetchone()
+        if row is None:
+            return None
+        return _job_to_claimed(
+            row,
+            worker_id,
+            now=row["leased_at"],
+            lease_expires_at=row["lease_expires_at"],
+            lease_token=row["lease_token"],
+        )
+    finally:
+        conn.close()
+
+
+def replay_started_job(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    lease_token: str,
+) -> Optional[dict[str, Any]]:
+    """Idempotent ``start`` replay (lost-response safety).
+
+    If the job is already RUNNING with the same worker + lease token, the
+    previous ``start`` already committed (LEASED -> RUNNING + attempt +1);
+    returning the current row means a retried start can NOT double-increment
+    the attempt count. Returns None when the job is not in the replayed state.
+    """
+    db_path = Path(db_path)
+    job_id = normalize_identity_component(job_id)
+    worker_id = normalize_identity_component(worker_id)
+    lease_token = normalize_identity_component(lease_token)
+    conn = open_operations_store(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["state"] != JobState.RUNNING.value:
+            return None
+        if row["lease_owner"] != worker_id or row["lease_token"] != lease_token:
+            return None
+        return _row_dict(row)
+    finally:
+        conn.close()
+
+
+def replay_completed_job(
+    db_path: Path,
+    job_id: str,
+    worker_id: str,
+    outcome: str,
+) -> Optional[dict[str, Any]]:
+    """Idempotent ``complete`` replay (lost-response safety).
+
+    If the job is already in the state this completion outcome would produce
+    and the most recent attempt belongs to this worker, the previous
+    completion already committed; returning the current row means a retried
+    completion can NOT double-write the attempt/event. Outcomes map to:
+      succeeded      -> SUCCEEDED
+      retryable_failure -> FAILED_RETRYABLE
+      terminal_failure  -> FAILED_TERMINAL
+    """
+    db_path = Path(db_path)
+    job_id = normalize_identity_component(job_id)
+    worker_id = normalize_identity_component(worker_id)
+    outcome = normalize_identity_component(outcome)
+    expected = {
+        "succeeded": JobState.SUCCEEDED.value,
+        "retryable_failure": JobState.FAILED_RETRYABLE.value,
+        "terminal_failure": JobState.FAILED_TERMINAL.value,
+    }
+    target_state = expected.get(outcome)
+    if target_state is None:
+        return None
+    conn = open_operations_store(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if row is None or row["state"] != target_state:
+            return None
+        attempt = conn.execute(
+            """
+            SELECT * FROM job_attempts
+            WHERE job_id=? AND finished_at IS NOT NULL
+            ORDER BY attempt_number DESC LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+        if attempt is None or attempt["worker_id"] != worker_id:
+            return None
+        return _row_dict(row)
     finally:
         conn.close()
 

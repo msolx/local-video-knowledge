@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05 DONE; M6-06 DONE; M6-07..M6-09 TODO.
+> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05 DONE; M6-06 DONE; M6-07 DONE; M6-08..M6-09 TODO.
 
 ---
 
@@ -15,7 +15,7 @@
 | M6-04 | DONE | Scheduler + Automatic Downstream Orchestration |
 | M6-05 | DONE | Crash Recovery / Retry / Observability |
 | M6-06 | DONE | Windows PC Worker Host & Autostart |
-| M6-07 | TODO | NAS Docker Control Plane Deployment |
+| M6-07 | DONE | NAS Docker Control Plane + Remote Worker Transport |
 | M6-08 | TODO | Real Douyin Favorite → Searchable Knowledge E2E |
 | M6-09 | TODO | Final Acceptance |
 
@@ -198,13 +198,28 @@ Wrap the frozen `WorkerRuntime` into a reliable Windows long-running worker host
 
 ---
 
-## M6-07: NAS Docker Control Plane Deployment (`TODO`)
+## M6-07: NAS Control Plane & Remote Worker Transport (`DONE`)
 
-### Objective
-Docker Compose / service autostart for the NAS control plane + storage mounts + Knowledge Store ownership.
+### Deliverables
+- `src/operations/transport.py` — `WorkerOperationsTransport` Protocol + `LocalSQLiteWorkerTransport` (frozen store delegator; backward compatible with `local_sqlite_test`).
+- `src/operations/http_transport.py` — `HttpWorkerTransport` client + frozen error contract (`m6-control-plane-api-v1`; AUTH_FAILED / VALIDATION_ERROR / NO_JOB / STALE_LEASE / CONFLICT / NOT_FOUND / SERVER_UNAVAILABLE / INVARIANT_ERROR), Bearer auth, bounded timeouts, retry/backoff, secret redaction.
+- `src/operations/control_plane.py` — `ControlPlaneConfig` (`m6-control-plane-config-v1`), `ControlPlaneService` lifecycle (ordered startup: local-path guard → open/validate Ops DB → verify M5 → startup_recovery → scheduler → NAS local worker → loops → HTTP ready), HTTP app, additive `rpc_idempotency` table with TTL, stage placement allowlists.
+- `src/operations/store.py` (additive) — `allowed_stages` claim filter, `find_active_claim` / `replay_started_job` / `replay_completed_job` (idempotency), `list_jobs(lease_owner=...)`.
+- `src/operations/worker.py` (additive) — transport injection + `allowed_stages`; `remote_unavailable` cycle outcome.
+- `src/operations/windows_worker.py` (additive) — http-mode config (`control_plane_url`, `auth_token_env`, `http_timeout_seconds`, `reconnect_backoff_seconds`).
+- Docker: `docker/control-plane/{Dockerfile, docker-compose.example.yml, config.example.json, requirements-docker.txt}`.
+- Tests: `tests/test_operations_http_transport.py` (21), `tests/test_operations_control_plane.py` (38).
+- Config examples: `config/examples/m6_control_plane.example.json`, `config/examples/m6_windows_worker_http.example.json`.
+- Runbook: `docs/M6_NAS_CONTROL_PLANE_RUNBOOK.md`.
 
-### Scope hints
-- Must respect the M2 browser-runtime portability constraint (Topology B blocked until resolved).
+### Verification
+- Targeted operations suite: 416 passed.
+- M4 incident acceptance (`test_m4_acceptance` + `test_m4_incident_recovery`): 54 passed.
+- Full regression `pytest tests -q`: 1702 passed, 10 skipped, 0 failed.
+- Live C10: video 62 KU / album 6 KU. Production M5 store: 2 assets / 68 KU, revision `7b604b334eaaede2f98e341a1cbeafdf3979d4643bc2b54196769e19919355d6` (unchanged). No production Ops DB created. Docker image built + disposable localhost smoke (healthy; /health/live open, /health/ready + status authenticated). No live Douyin/network/GPU/LLM; no Windows scheduled task registered; no production NAS deployment.
+
+### Scope notes
+- Fixed stage placement: Windows = {DISCOVER, ARCHIVE, MEDIA_PROCESS, KNOWLEDGE_EXTRACT}; NAS = {KNOWLEDGE_FINALIZE, STORE_INGEST}, enforced by server-authoritative claim filter (explicit policy, not a timing race).
 
 ---
 
@@ -216,6 +231,7 @@ End-to-end: real Douyin favorite → collection detection → archive → media 
 ### Scope hints
 - Uses real C10 corpus assets for validation of stages already covered by M4/M5.
 - PC must be the authentic collector/downloader location in v1 (Topology A).
+- M6-08 performs the real NAS deployment (production volumes + real token) and enables the Windows scheduled task.
 
 ---
 

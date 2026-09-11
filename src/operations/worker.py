@@ -38,14 +38,11 @@ from .models import (
 )
 from .store import (
     StaleLeaseError,
-    claim_next_job,
-    complete_job_retryable_failure,
-    complete_job_success,
-    complete_job_terminal_failure,
-    register_worker,
-    renew_job_lease,
-    start_claimed_job,
-    worker_heartbeat,
+)
+from .transport import (
+    LocalSQLiteWorkerTransport,
+    RemoteUnavailableError,
+    WorkerOperationsTransport,
 )
 
 __all__ = [
@@ -137,7 +134,7 @@ StageHandler = Callable[[ClaimedJob], Any]
 class WorkerRunResult:
     """Result of one WorkerRuntime.run_once() cycle."""
 
-    outcome: str  # "idle" | "completed" | "retryable" | "terminal" | "lease_lost"
+    outcome: str  # "idle" | "completed" | "retryable" | "terminal" | "lease_lost" | "remote_unavailable"
     claimed_job_id: Optional[str] = None
     job_stage: Optional[str] = None
     error_class: Optional[str] = None
@@ -165,7 +162,8 @@ class WorkerRuntime:
     def __init__(
         self,
         *,
-        store_path: str | Path,
+        store_path: str | Path | None = None,
+        transport: Optional[WorkerOperationsTransport] = None,
         worker_id: str,
         display_name: Optional[str] = None,
         hostname: Optional[str] = None,
@@ -177,12 +175,25 @@ class WorkerRuntime:
         stale_threshold_seconds: int = 120,
         now: Optional[Callable[[], str]] = None,
         worker_metadata: Optional[dict[str, Any]] = None,
+        allowed_stages: Optional[list[str]] = None,
     ) -> None:
-        self.store_path = Path(store_path)
+        if transport is None:
+            if store_path is None:
+                raise ValueError(
+                    "WorkerRuntime requires store_path (or an injected transport)"
+                )
+            transport = LocalSQLiteWorkerTransport(store_path)
+        self._transport = transport
+        self.store_path = Path(store_path) if store_path is not None else None
         self.worker_id = normalize_identity_component(worker_id)
         self.display_name = display_name
         self.hostname = hostname
         self.capabilities = normalize_capabilities(capabilities or [])
+        self.allowed_stages: Optional[tuple[str, ...]] = (
+            tuple(a.strip() for a in allowed_stages if a and a.strip())
+            if allowed_stages
+            else None
+        )
         self.handlers: dict[str, StageHandler] = dict(handlers or {})
         self.lease_duration_seconds = int(lease_duration_seconds)
         self.heartbeat_interval_seconds = float(heartbeat_interval_seconds)
@@ -199,19 +210,18 @@ class WorkerRuntime:
     # -- lifecycle ---------------------------------------------------------
 
     def register(self) -> dict[str, Any]:
-        return register_worker(
-            self.store_path,
+        return self._transport.register_worker(
             self.worker_id,
             self.capabilities,
             display_name=self.display_name,
             hostname=self.hostname,
             metadata=self._metadata,
+            allowed_stages=list(self.allowed_stages) if self.allowed_stages else None,
             now=self._clock(),
         )
 
     def heartbeat(self) -> dict[str, Any]:
-        return worker_heartbeat(
-            self.store_path,
+        return self._transport.heartbeat_worker(
             self.worker_id,
             capabilities=self.capabilities,
             now=self._clock(),
@@ -220,8 +230,7 @@ class WorkerRuntime:
     def _renew_active_lease(self) -> None:
         if self._active_job_id is None or self._active_token is None:
             return
-        renew_job_lease(
-            self.store_path,
+        self._transport.renew_job_lease(
             self._active_job_id,
             self.worker_id,
             self._active_token,
@@ -275,13 +284,22 @@ class WorkerRuntime:
         except Exception:
             pass
 
-        claimed = claim_next_job(
-            self.store_path,
-            self.worker_id,
-            self.capabilities,
-            lease_duration_seconds=self.lease_duration_seconds,
-            now=self._clock(),
-        )
+        try:
+            claimed = self._transport.claim_next_job(
+                self.worker_id,
+                self.capabilities,
+                allowed_stages=list(self.allowed_stages)
+                if self.allowed_stages
+                else None,
+                lease_duration_seconds=self.lease_duration_seconds,
+                now=self._clock(),
+            )
+        except RemoteUnavailableError:
+            # Control plane temporarily unreachable (NAS reboot/offline).
+            # Keep the worker alive; lease-expiry recovery handles any
+            # in-flight job. Do NOT crash the host.
+            return WorkerRunResult(outcome="remote_unavailable")
+
         if claimed is None:
             return WorkerRunResult(outcome="idle")
 
@@ -290,12 +308,19 @@ class WorkerRuntime:
         self.lease_lost = False
 
         try:
-            start_claimed_job(
-                self.store_path,
+            self._transport.start_claimed_job(
                 claimed.job_id,
                 self.worker_id,
                 claimed._lease_token,
                 now=self._clock(),
+            )
+        except RemoteUnavailableError:
+            self._active_job_id = None
+            self._active_token = None
+            return WorkerRunResult(
+                outcome="remote_unavailable",
+                claimed_job_id=claimed.job_id,
+                job_stage=claimed.stage,
             )
         except StaleLeaseError:
             self.lease_lost = True
@@ -335,8 +360,7 @@ class WorkerRuntime:
                     claimed_job_id=claimed.job_id,
                     job_stage=claimed.stage,
                 )
-            complete_job_success(
-                self.store_path,
+            self._transport.complete_job_success(
                 claimed.job_id,
                 self.worker_id,
                 claimed._lease_token,
@@ -354,8 +378,7 @@ class WorkerRuntime:
                     claimed_job_id=claimed.job_id,
                     job_stage=claimed.stage,
                 )
-            complete_job_terminal_failure(
-                self.store_path,
+            self._transport.complete_job_terminal_failure(
                 claimed.job_id,
                 self.worker_id,
                 claimed._lease_token,
@@ -377,8 +400,7 @@ class WorkerRuntime:
                     claimed_job_id=claimed.job_id,
                     job_stage=claimed.stage,
                 )
-            complete_job_retryable_failure(
-                self.store_path,
+            self._transport.complete_job_retryable_failure(
                 claimed.job_id,
                 self.worker_id,
                 claimed._lease_token,
@@ -403,8 +425,7 @@ class WorkerRuntime:
                     claimed_job_id=claimed.job_id,
                     job_stage=claimed.stage,
                 )
-            complete_job_retryable_failure(
-                self.store_path,
+            self._transport.complete_job_retryable_failure(
                 claimed.job_id,
                 self.worker_id,
                 claimed._lease_token,
@@ -433,7 +454,7 @@ class WorkerRuntime:
         while not self._stop_event.is_set():
             result = self.run_once()
             cycles += 1
-            if result.outcome != "idle":
+            if result.outcome not in ("idle", "remote_unavailable"):
                 completed += 1
             if max_cycles is not None and cycles >= max_cycles:
                 break

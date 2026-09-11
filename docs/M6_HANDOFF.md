@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`; `M6-07 = NEXT`; `M6-08..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`, `M6-07 = DONE`; `M6-08 = NEXT`; `M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -8,14 +8,16 @@
 
 ## 1. Current State
 
-- M6-00 (design), M6-01 (durable operations store + job state machine), M6-02 (worker + lease protocol), M6-03 (stage adapters), M6-04 (scheduler), M6-05 (recovery/observability), and M6-06 (Windows worker host + autostart) are complete on `feat/m6-automated-knowledge-operations`, branched from `main` at `e6476be57564d950b7eb75016eed54b1cbf32fec` (M5 final SHA).
+- M6-00 (design), M6-01 (durable operations store + job state machine), M6-02 (worker + lease protocol), M6-03 (stage adapters), M6-04 (scheduler), M6-05 (recovery/observability), M6-06 (Windows worker host + autostart), and M6-07 (NAS control plane + remote worker transport) are complete on `feat/m6-automated-knowledge-operations`, branched from `main` at `e6476be57564d950b7eb75016eed54b1cbf32fec` (M5 final SHA).
 - M6-06 delivered `src/operations/windows_worker.py` + `tests/test_operations_windows_worker.py` (54 tests), PowerShell autostart artifacts under `scripts/windows/`, `config/examples/m6_windows_worker.example.json`, and `docs/M6_WINDOWS_WORKER_RUNBOOK.md`. No production operations DB created; no production scheduled task registered; no M2–M5 code modified; no runtime started.
+- M6-07 delivered `src/operations/{transport,http_transport,control_plane}.py` + `tests/test_operations_{http_transport,control_plane}.py` (21 + 38 tests), additive `allowed_stages`/idempotency primitives in `store.py` and transport injection in `worker.py`/`windows_worker.py`, Docker packaging under `docker/control-plane/`, config examples, and `docs/M6_NAS_CONTROL_PLANE_RUNBOOK.md`. Real localhost HTTP distributed E2E (DISCOVER→…→STORE_INGEST→SEARCHABLE) passed with execution-host assertions; PC-offline, NAS-restart, network-partition, and fencing tests green. No production NAS deployment; no Windows scheduled task; no live Douyin/network/GPU/LLM; no production Ops DB.
 - Docs:
   - `docs/M6_OPERATIONS_ARCHITECTURE.md`
-  - `docs/M6_DECISIONS.md` (now 55 decisions; M6-06 added Decisions 49–55)
-  - `docs/M6_TASKS.md` (M6-06 DONE)
+  - `docs/M6_DECISIONS.md` (now 65 decisions; M6-07 added Decisions 56–65)
+  - `docs/M6_TASKS.md` (M6-07 DONE)
   - `docs/M6_HANDOFF.md`
-  - `docs/M6_WINDOWS_WORKER_RUNBOOK.md` (new)
+  - `docs/M6_WINDOWS_WORKER_RUNBOOK.md`
+  - `docs/M6_NAS_CONTROL_PLANE_RUNBOOK.md` (new)
 
 ---
 
@@ -144,15 +146,14 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-07 — NAS Docker Control Plane & Remote Worker Transport**
+**M6-08 — Production Deployment & Real Douyin Favorite → Searchable E2E**
 
-- Objective: Docker Compose / service autostart for the NAS control plane + storage mounts + Knowledge Store ownership, and the thin remote worker transport (control-plane API) that the Windows worker host will target.
-- The Windows worker host from M6-06 is ready-to-install but currently runs only `local_sqlite_test` transport; production registration (`install_m6_worker_task.ps1 -Apply`) is deferred until the M6-07/08 control-plane endpoint exists.
-- Reuse (all frozen): `src/operations/scheduler.py`, `src/operations/admin.py` (`startup_recovery` — control-plane owned), `src/operations/observability.py`, `src/operations/store.py`, `src/operations/windows_worker.py` (`WindowsWorkerHost`, `WorkerHostConfig` with `control_plane_transport=http` placeholder).
-- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-06 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it; Windows worker must never open the NAS operations DB over SMB/UNC.
-- Commit message: per M6-07 spec.
+- Objective: deploy the NAS control plane to the real NAS (production volumes + real `PKP_CONTROL_PLANE_TOKEN` secret), register the Windows scheduled task (`scripts/windows/install_m6_worker_task.ps1 -Apply` — currently READY-TO-INSTALL, never registered), and run the real Douyin favorite → SEARCHABLE E2E with live C10 assets.
+- Reuse (all frozen): `src/operations/control_plane.py` (`ControlPlaneService`), `src/operations/http_transport.py`, `src/operations/transport.py`, `src/operations/scheduler.py`, `src/operations/admin.py`, `src/operations/observability.py`, `src/operations/store.py`, `src/operations/windows_worker.py` (http mode via `config/examples/m6_windows_worker_http.example.json`), Docker `docker/control-plane/`.
+- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-07 sealed semantics without an explicit contract-gap STOP; no SQLite-over-SMB (Ops DB + M5 store NAS-local only); remote Windows worker never opens the NAS Ops/M5 DB directly — HTTP control plane only; real token only via env/secret (never committed); no live external network beyond the real deployment target.
+- Commit message: per M6-08 spec.
 
-Do not start M6-07 until it is explicitly requested; M6-06 is sealed above.
+Do not start M6-08 until it is explicitly requested; M6-07 is sealed above.
 
 ---
 

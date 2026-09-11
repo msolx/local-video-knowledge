@@ -1,0 +1,25 @@
+{
+  "schema_version": "m6-control-plane-config-v1",
+  "operations_db_path": "/var/lib/pkp/operations/operations.sqlite3",
+  "knowledge_store_path": "/var/lib/pkp/knowledge/knowledge_store.sqlite3",
+  "archive_root": "/mnt/pkp/archive",
+  "processed_root": "/mnt/pkp/processed",
+  "host": "0.0.0.0",
+  "port": 8765,
+  "scheduler_poll_interval_seconds": 60.0,
+  "worker_stale_threshold_seconds": 120,
+  "local_worker_enabled": true,
+  "local_worker_id": "nas-local-worker",
+  "local_worker_capabilities": [
+    "store_ingest"
+  ],
+  "local_worker_allowed_stages": [
+    "KNOWLEDGE_FINALIZE",
+    "STORE_INGEST"
+  ],
+  "auth_token_env": "PKP_CONTROL_PLANE_TOKEN",
+  "log_path": "/var/log/pkp/control-plane.log",
+  "log_max_bytes": 10000000,
+  "log_backup_count": 5,
+  "production_mode": true
+}

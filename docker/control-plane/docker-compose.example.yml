@@ -1,0 +1,50 @@
+# M6-07 NAS Control Plane — example compose (DISPOSABLE/TEST ONLY).
+#
+# WARNING: this file uses temp/throwaway volumes and a CHANGE_ME token. It is
+# intended for local smoke testing, never production. The production NAS
+# deployment is M6-08 and must use real persistent volumes + a real secret.
+#
+# Volume separation (frozen):
+#   /var/lib/pkp/operations -> Ops DB (NAS local filesystem ONLY)
+#   /var/lib/pkp/knowledge  -> M5 Knowledge Store (NAS local filesystem ONLY)
+#   /mnt/pkp/archive        -> archive dataset
+#   /mnt/pkp/processed      -> processed dataset
+#
+# The Operations/M5 SQLite files MUST live on the NAS local filesystem, never
+# on a shared Windows SMB mount.
+
+services:
+  control-plane:
+    build:
+      context: ../../
+      dockerfile: docker/control-plane/Dockerfile
+    container_name: pkp-control-plane
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      PKP_CONTROL_PLANE_TOKEN: CHANGE_ME
+    volumes:
+      - ./config.example.json:/opt/pkp/control-plane.json:ro
+      - ops_data:/var/lib/pkp/operations
+      - knowledge_data:/var/lib/pkp/knowledge
+      - archive_data:/mnt/pkp/archive
+      - processed_data:/mnt/pkp/processed
+      - logs_data:/var/log/pkp
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ops_data:
+    name: pkp_ops_data
+  knowledge_data:
+    name: pkp_knowledge_data
+  archive_data:
+    name: pkp_archive_data
+  processed_data:
+    name: pkp_processed_data
+  logs_data:
+    name: pkp_logs_data

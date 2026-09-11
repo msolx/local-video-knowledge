@@ -1,0 +1,5 @@
+# Minimal runtime dependencies for the M6-07 NAS control plane image.
+# The control plane + NAS local worker (KNOWLEDGE_FINALIZE / STORE_INGEST)
+# only need stdlib + jsonschema. The heavy GPU/OCR/ASR deps in requirements.txt
+# are Windows-worker side only.
+jsonschema>=4.20.0

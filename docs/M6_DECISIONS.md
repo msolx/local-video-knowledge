@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`, `M6-07..M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`, `M6-07 = DONE`, `M6-08..M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -334,3 +334,44 @@
 ## Decision 55: Worker Host Does Not Own Startup Recovery (M6-06)
 - **Context**: M6-05 `startup_recovery` belongs to the NAS control plane, not an execution worker — especially in the future remote topology.
 - **Decision**: The Windows worker host only registers, heartbeats, claims, and executes. Recovery/scheduler remain control-plane duties. Windows sleep/shutdown are normal states: lease expiry → NAS recovery; on resume the host re-registers and re-heartbeats. No distributed resume protocol in M6-06.
+---
+
+## Decision 56: Explicit Stage Placement Policy — Not a Timing Race (M6-07)
+- **Context**: KNOWLEDGE_FINALIZE has an empty required-capabilities set, so both a Windows worker and the NAS local worker could legally claim it. Relying on "NAS usually claims first" is race-dependent topology.
+- **Decision**: Explicit placement via a server-authoritative llowed_stages filter. claim_next_job keeps the M6-02 all-of capability rule unchanged and adds an additive llowed_stages post-filter. The control plane persists each worker's registered stage allowlist in workers.metadata_json and derives the claim filter from it — never from the request body. WINDOWS_STAGE_ALLOWLIST = {DISCOVER, ARCHIVE, MEDIA_PROCESS, KNOWLEDGE_EXTRACT}; NAS_STAGE_ALLOWLIST = {KNOWLEDGE_FINALIZE, STORE_INGEST}. STORE_INGEST must be NAS-local; KNOWLEDGE_FINALIZE is CPU-deterministic and NAS-owned.
+
+## Decision 57: RPC Idempotency — State-Based Replay, No New Store (M6-07)
+- **Context**: HTTP requests can commit server-side then lose the response (lost-response). Retries must not double-apply attempts or completions.
+- **Decision**: Idempotency is achieved by server-side state-based replay plus an additive pc_idempotency table owned by the control plane (not store.py). claim: an existing unexpired LEASED job for the same worker is replayed (ind_active_claim); start: a RUNNING job owned by the same worker/token is replayed (eplay_started_job, no attempt double-increment); complete: a job already in the terminal target state with a matching last attempt is replayed (eplay_completed_job). The pc_idempotency table has a TTL/cleanup policy (86400s) to bound growth. operations-store-v1 schema is retained.
+
+## Decision 58: Fencing Remains Authoritative Over the Wire (M6-07)
+- **Context**: A lease may expire while a worker is mid-execution; another worker may claim the job with a new token.
+- **Decision**: HTTP transport cannot weaken fencing. All lease-mutating RPCs re-check lease ownership/token server-side (_check_lease_holder); a stale completion returns STALE_LEASE even if the worker already produced an artifact. Future retry then hits the sealed adapter CACHE_HIT path — at-least-once recovery, never exactly-once.
+
+## Decision 59: Transient Remote Outage Is Not a Worker Fault (M6-07)
+- **Context**: NAS reboot/offline must not permanently kill the Windows worker.
+- **Decision**: HttpWorkerTransport classifies connection-refused/timeout/temporary-5xx as transient RemoteUnavailableError with bounded retry/backoff. WorkerRuntime returns a emote_unavailable cycle outcome and keeps running; it never marks a job failed on transport errors. Every HTTP request has an explicit bounded timeout (default 30s, configurable), never infinite blocking.
+
+## Decision 60: Auth Is Bearer Token, Env-Injected, Constant-Time (M6-07)
+- **Context**: Worker APIs need protection; no secrets may be committed, logged, or echoed.
+- **Decision**: Bearer token read from env PKP_CONTROL_PLANE_TOKEN (server and client), config only names uth_token_env. Comparison via hmac.compare_digest. /health/live is unauthenticated; everything else (including /health/ready) requires auth. Production mode fails closed if the token is missing; only explicit local-test mode may bypass. Tokens/lease_tokens never appear in logs, observability, CLI output, or error text (secret-key redaction).
+
+## Decision 61: Control Plane Owns All Operations State Mutation (M6-07)
+- **Context**: Distributed topology needs a single authority for the state machine.
+- **Decision**: The NAS control plane owns validate_operations_store, startup_recovery, recover_expired_leases, retry requeue, scheduler, and all Operations SQLite transactions. Remote workers own only side effects (filesystem/model/browser) and heartbeat/lease/completion reports. Clients never simulate job state transitions; the server is the sole authority. LocalSQLiteWorkerTransport remains for tests/local-dev and stays backward compatible.
+
+## Decision 62: Ops DB & M5 Store Are NAS-Local Filesystem Only (M6-07)
+- **Context**: Frozen Decision 32 + M6-06 SMB guard.
+- **Decision**: The control plane rejects UNC (\\...) and URL (://) paths for operations_db_path and knowledge_store_path at config parse AND at startup (fail-closed). The NAS volume must be a local filesystem (ext4/btrfs/ZFS); SQLite-over-SMB/NFS is forbidden. Windows workers never open either DB directly — only via the HTTP control plane.
+
+## Decision 63: Control-Plane Startup Sequence Is Ordered (M6-07)
+- **Context**: HTTP must not advertise readiness before recovery/initialization.
+- **Decision**: Frozen startup order: load config → configure logging → open/create local Ops DB → validate_operations_store → verify M5 store path → startup_recovery → create scheduler → create NAS local worker → start scheduler loop → start local worker loop → expose HTTP ready. /health/ready reports ready only after all init steps succeed; errors are surfaced as structured {error:{code,message}} (AUTH_FAILED / VALIDATION_ERROR / NO_JOB / STALE_LEASE / CONFLICT / NOT_FOUND / SERVER_UNAVAILABLE / INVARIANT_ERROR) — never tracebacks, SQL, or tokens.
+
+## Decision 64: Artifact Paths Are Machine-Local, Identity Is Content-Based (M6-07)
+- **Context**: Windows (Z:\PKP\processed) and NAS (/srv/pkp/processed) see the same physical storage under different roots.
+- **Decision**: M6-03 frozen fingerprint contract already excludes esolved_path from ArtifactDescriptor.fingerprint_dict; stage output identity is path-independent. Fixed stage placement (Decision 56) prevents the same stage running on different OSes with different path-based fingerprints. Stage execution resolves files from the local processed_root/rchive_root config; the NAS never opens Windows-style absolute paths, and Windows never opens NAS paths. Cross-machine path translation is NOT implemented in M6 v1 (STOP-guarded); it is a documented portability risk if a stage ever runs on both hosts.
+
+## Decision 65: Docker Packaging Is Thin, Non-Root, Disposable-Smoke Only (M6-07)
+- **Context**: Container must hold control plane + scheduler + NAS local worker, not GPU/Chrome/LM Studio/llama.cpp.
+- **Decision**: docker/control-plane/Dockerfile (python:3.12-slim, non-root pkp user, stdlib urllib healthcheck on /health/live), docker-compose.example.yml with separate volumes /var/lib/pkp/operations (Ops DB), /var/lib/pkp/knowledge (M5 store), /mnt/pkp/archive, /mnt/pkp/processed, logs; PKP_CONTROL_PLANE_TOKEN=CHANGE_ME placeholder; estart: unless-stopped (fatal crash → Docker restart policy, the process does not self-restart infinitely). Build + disposable localhost smoke performed; no production NAS deployment (M6-08).

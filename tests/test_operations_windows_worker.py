@@ -430,7 +430,8 @@ class TestHost:
             return _FakeRuntime(**kw)
 
         WindowsWorkerHost(cfg, runtime_factory=_factory).start(max_cycles=1)
-        assert captured["store_path"] == str(tmp_path / "ops.sqlite3")
+        # M6-07: the host injects a LocalSQLiteWorkerTransport (never store_path).
+        assert captured["transport"].db_path == Path(tmp_path / "ops.sqlite3")
         assert captured["worker_id"] == cfg.worker_id
 
     def test_heartbeat_registration_delegation(self, tmp_path: Path):
@@ -486,10 +487,29 @@ class TestHost:
         finally:
             lock.release()
 
-    def test_http_transport_fails_closed(self, tmp_path: Path):
-        cfg = self._local_config(tmp_path, control_plane_transport=CONTROL_PLANE_TRANSPORT_FUTURE)
-        result = WindowsWorkerHost(cfg).start()
-        assert result.exit_code == EXIT_CONFIG_ERROR
+    def test_http_transport_requires_control_plane_url(self, tmp_path: Path):
+        # M6-07: http transport without a control_plane_url fails at config time.
+        with pytest.raises(ValueError):
+            _config(
+                worker_id="http-worker",
+                capabilities=["cpu_media"],
+                control_plane_transport=CONTROL_PLANE_TRANSPORT_FUTURE,
+                operations_db_path=str(tmp_path / "ops.sqlite3"),
+            )
+
+    def test_http_transport_config_valid_with_url(self, tmp_path: Path):
+        cfg = _config(
+            worker_id="http-worker",
+            capabilities=["cpu_media"],
+            control_plane_transport=CONTROL_PLANE_TRANSPORT_FUTURE,
+            control_plane_url="http://127.0.0.1:8765",
+            operations_db_path=None,
+            single_instance_lock_path=str(tmp_path / "host.lock"),
+        )
+        assert cfg.control_plane_transport == CONTROL_PLANE_TRANSPORT_FUTURE
+        assert cfg.control_plane_url == "http://127.0.0.1:8765"
+        # http mode must never use a local operations DB for execution.
+        assert cfg.operations_db_path is None
 
     def test_no_production_ops_db_auto_created(self, tmp_path: Path):
         prod_db = REPO_ROOT / "data" / "operations" / "operations.sqlite3"
