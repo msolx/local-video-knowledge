@@ -159,6 +159,48 @@ from .admin import (
     admin_requeue_asset,
 )
 
+# M6-06 Windows worker host is imported lazily (PEP 562 __getattr__) so that
+# `python -m src.operations.windows_worker` does not trigger the runpy
+# RuntimeWarning ("found in sys.modules after import of package ..."). The
+# public API surface is preserved: `from src.operations import ...` still
+# resolves the names below.
+
+_WINDOWS_WORKER_EXPORTS = frozenset(
+    {
+        "WORKER_HOST_CONFIG_VERSION",
+        "WORKER_PREFLIGHT_RESULT_VERSION",
+        "WORKER_HOST_POLICY_VERSION",
+        "WINDOWS_PC_TARGET_CAPABILITIES",
+        "CONTROL_PLANE_TRANSPORT_LOCAL",
+        "CONTROL_PLANE_TRANSPORT_FUTURE",
+        "EXIT_OK",
+        "EXIT_CONFIG_ERROR",
+        "EXIT_PREFLIGHT_FAILURE",
+        "EXIT_ALREADY_RUNNING",
+        "EXIT_FATAL_RUNTIME_ERROR",
+        "WorkerHostConfig",
+        "PreflightCheck",
+        "WorkerPreflightResult",
+        "SingleInstanceLock",
+        "configure_worker_logging",
+        "redact_config",
+        "run_capability_preflight",
+        "WindowsWorkerHost",
+        "HostStartResult",
+        "windows_worker_main",
+    }
+)
+
+
+def __getattr__(name: str):
+    if name in _WINDOWS_WORKER_EXPORTS:
+        from . import windows_worker as _ww
+
+        if name == "windows_worker_main":
+            return _ww.main
+        return getattr(_ww, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 __all__ = [
     # M6-01 Operations domain model
     "OPERATIONS_SCHEMA_VERSION",
@@ -305,4 +347,26 @@ __all__ = [
     "admin_retry_job",
     "admin_cancel_job",
     "admin_requeue_asset",
+    # M6-06 Windows worker host
+    "WORKER_HOST_CONFIG_VERSION",
+    "WORKER_PREFLIGHT_RESULT_VERSION",
+    "WORKER_HOST_POLICY_VERSION",
+    "WINDOWS_PC_TARGET_CAPABILITIES",
+    "CONTROL_PLANE_TRANSPORT_LOCAL",
+    "CONTROL_PLANE_TRANSPORT_FUTURE",
+    "EXIT_OK",
+    "EXIT_CONFIG_ERROR",
+    "EXIT_PREFLIGHT_FAILURE",
+    "EXIT_ALREADY_RUNNING",
+    "EXIT_FATAL_RUNTIME_ERROR",
+    "WorkerHostConfig",
+    "PreflightCheck",
+    "WorkerPreflightResult",
+    "SingleInstanceLock",
+    "configure_worker_logging",
+    "redact_config",
+    "run_capability_preflight",
+    "WindowsWorkerHost",
+    "HostStartResult",
+    "windows_worker_main",
 ]

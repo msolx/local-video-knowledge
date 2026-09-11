@@ -1,0 +1,43 @@
+{
+  "schema_version": "m6-windows-worker-config-v1",
+  "worker_id": "windows-pc-4090",
+  "display_name": "Windows PC Worker (RTX 4090)",
+  "hostname": "LOCAL-PC",
+  "capabilities": [
+    "collector",
+    "downloader",
+    "cpu_media",
+    "gpu_asr",
+    "gpu_vlm",
+    "llm_extraction"
+  ],
+  "workspace_root": "./data/workspace",
+  "archive_root": "./data/archive",
+  "processed_root": "./data/processed",
+  "knowledge_store_path": "./data/knowledge/knowledge_store.sqlite3",
+  "operations_db_path": null,
+  "poll_interval_seconds": 1.0,
+  "heartbeat_interval_seconds": 10.0,
+  "lease_duration_seconds": 120,
+  "worker_stale_threshold_seconds": 120,
+  "log_path": "logs/operations/windows-worker.log",
+  "log_max_bytes": 10000000,
+  "log_backup_count": 5,
+  "single_instance_lock_path": "data/operations/windows-worker.lock",
+  "control_plane_transport": "local_sqlite_test",
+  "startup_delay_seconds": 45,
+  "runtime_references": {
+    "browser_executable": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "browser_profile": "G:\\antigravity-cli\\dy\\runtime\\chrome-profile",
+    "node_runtime": null,
+    "asr_runtime": null,
+    "model_root": null,
+    "vlm_runtime": null,
+    "vlm_model_reference": null,
+    "llm_runtime": "G:\\llama.cpp",
+    "llm_model_root": "D:\\LMmodel"
+  },
+  "extra_metadata": {
+    "note": "EXAMPLE ONLY - copy to config/local/m6_windows_worker.json and fill real paths"
+  }
+}

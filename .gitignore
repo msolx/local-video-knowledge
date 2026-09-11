@@ -15,6 +15,7 @@ model_cache/
 
 # Machine-specific configuration and secrets
 config/config.json
+config/local/
 .env
 *.env
 

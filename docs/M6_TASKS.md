@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05 DONE; M6-06..M6-09 TODO.
+> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05 DONE; M6-06 DONE; M6-07..M6-09 TODO.
 
 ---
 
@@ -14,7 +14,7 @@
 | M6-03 | DONE | Pipeline Stage Adapters for M2→M5 |
 | M6-04 | DONE | Scheduler + Automatic Downstream Orchestration |
 | M6-05 | DONE | Crash Recovery / Retry / Observability |
-| M6-06 | TODO | Windows PC Worker Autostart |
+| M6-06 | DONE | Windows PC Worker Host & Autostart |
 | M6-07 | TODO | NAS Docker Control Plane Deployment |
 | M6-08 | TODO | Real Douyin Favorite → Searchable Knowledge E2E |
 | M6-09 | TODO | Final Acceptance |
@@ -162,13 +162,39 @@ Retry policy (RETRYABLE vs TERMINAL, attempt/max/backoff), lease expiry requeue,
 
 ---
 
-## M6-06: Windows PC Worker Autostart (`TODO`)
+## M6-06: Windows PC Worker Host & Autostart (`DONE`)
 
 ### Objective
-Boot/login autostart for the PC worker (capability-based GPU/media/collector worker).
+Wrap the frozen `WorkerRuntime` into a reliable Windows long-running worker host with explicit configuration, capability preflight, single-instance enforcement, rotating redacted logging, graceful shutdown, deterministic exit codes, and Task Scheduler autostart artifacts.
 
-### Scope hints
-- Deployment contract only (architecture doc §24); service registration happens here, not in M6-00.
+### Scope hints (from M6-00 contract)
+- Deployment contract only (architecture doc §24); Task Scheduler artifacts ship ready-to-install but production registration is deferred to M6-08.
+- The Windows worker must NOT open a NAS-hosted `operations.sqlite3` over SMB/UNC; the operations DB is NAS-control-plane-owned (Decision 32/54).
+
+### Delivered
+- `src/operations/windows_worker.py` — the Windows PC Worker Host. Frozen contracts: `WORKER_HOST_CONFIG_VERSION = m6-windows-worker-config-v1`, `WORKER_PREFLIGHT_RESULT_VERSION = m6-windows-worker-preflight-v1`, `WORKER_HOST_POLICY_VERSION = m6-windows-worker-host-v1`; frozen exit codes (`EXIT_OK=0`, `EXIT_CONFIG_ERROR=2`, `EXIT_PREFLIGHT_FAILURE=3`, `EXIT_ALREADY_RUNNING=4`, `EXIT_FATAL_RUNTIME_ERROR=5`); `WINDOWS_PC_TARGET_CAPABILITIES = (collector, downloader, cpu_media, gpu_asr, gpu_vlm, llm_extraction)` (no `store_ingest`); transport placeholders `local_sqlite_test` (only runnable) / `http` (fails closed until M6-07/08).
+  - `WorkerHostConfig` (frozen dataclass): worker_id, capabilities, workspace/archive/processed roots, `operations_db_path` (local-dev/test only), knowledge_store_path, poll/heartbeat/lease/stale intervals, log path + rotation, `single_instance_lock_path`, transport, `startup_delay_seconds`, `runtime_references` (browser executable/profile, node, ASR/VLM/LLM runtimes + model roots). `load/from_dict/to_dict/export_json`; rejects unknown schema, empty worker_id, invalid/empty capabilities, non-`{local,http}` transport. Secrets never live in config.
+  - `WorkerPreflightResult`/`PreflightCheck` — JSON-safe; checks are existence/configuration only (never launch browser/Douyin/Whisper/llama.cpp). Missing required prerequisite → failed preflight (exit 3), never a silent capability drop.
+  - `SingleInstanceLock` — OS file lock (`msvcrt` win32 / `fcntl` else); stale lock file re-locked (never fatal); second instance → exit 4.
+  - `configure_worker_logging` — stdlib `RotatingFileHandler` (default `logs/operations/windows-worker.log`, 10 MB × 5 backups); `redact_config`/`redact_worker_registration`/`redact_message` strip secret-shaped keys (`lease_token`, cookies, tokens, API keys, password, auth…).
+  - `WindowsWorkerHost.start()` — lifecycle: hard SMB/UNC + transport guards → fail-closed on missing `operations_db_path` → preflight → single-instance lock → build `WorkerRuntime` → register (redacted) → heartbeat thread → SIGINT/SIGTERM graceful stop → `run_forever` → `EXIT_OK`; `KeyboardInterrupt` → `EXIT_OK`; fatal → `EXIT_FATAL_RUNTIME_ERROR` (redacted). Host never calls `startup_recovery` (control-plane duty).
+  - CLI `python -m src.operations.windows_worker {run|preflight|print-config} --config <path> [--json]`. `run` requires an explicit local `operations_db_path` (fails closed otherwise — never auto-creates production `data/operations/operations.sqlite3`).
+- `src/operations/__init__.py` — lazy PEP 562 `__getattr__` exports for windows_worker symbols (avoids the runpy `-m` stderr warning; `python -m src.operations.windows_worker` is stderr-clean for Task Scheduler).
+- `config/examples/m6_windows_worker.example.json` — tracked example (all 6 PC capabilities, `local_sqlite_test`, browser/Chrome profile + `G:\llama.cpp` / `D:\LMmodel` references, `operations_db_path: null`). No secrets. Real local config lives at gitignored `config/local/` (`config/local/` added to `.gitignore`).
+- `scripts/windows/run_m6_worker.ps1` — resolves repo root + exact venv Python (`.venv\Scripts\python.exe`), invokes `-m src.operations.windows_worker`, propagates exit code. No worker logic.
+- `scripts/windows/install_m6_worker_task.ps1` — validates config via `print-config`, builds the ScheduledTask definition (At LogOn + configurable delay, exact venv Python via the run script, `WorkingDirectory` = repo root, restart every 1 min / high count, no execution-time limit, limited interactive principal). **Dry-run by default**; `-Apply` is explicitly not intended until M6-08.
+- `scripts/windows/uninstall_m6_worker_task.ps1` — idempotent (missing task = no-op exit 0).
+- `scripts/windows/status_m6_worker_task.ps1` — read-only status (exists/state/last run/result/next run; secret-free actions).
+- `docs/M6_WINDOWS_WORKER_RUNBOOK.md` — full runbook (role, topology boundary, local-dev vs production, capability profile, preflight, logging, single instance, exit codes, Task Scheduler design, install/dry-run/uninstall/status, sleep/shutdown, no-SQLite-over-SMB rule, why production registration is deferred).
+- `tests/test_operations_windows_worker.py` — 54 tests covering: config parse/round-trip/invalid-schema/missing-worker_id/invalid+duplicate capability normalization/local-dev transport/production-rejects-local-topology/UNC rejection/example-no-secrets; preflight success + per-prerequisite failures + no-runtime-start + JSON-safe + no-secret-exposure; single-instance acquire/reject/release/stale-file; logging init/rotation/redaction; host lifecycle (start/WorkerRuntime constructed/heartbeat-registration delegation/graceful stop/KeyboardInterrupt/fatal exit/config exit/preflight exit/already-running exit); safety (no production Ops DB auto-created via host AND via CLI, no production M5 modified, no network, no LLM/GPU); PowerShell artifacts (run-script path, install dry-run, deterministic task name, logon trigger, startup delay, exact venv Python, working dir, restart policy, uninstall idempotency, status read-only, no Task Scheduler mutation); real install dry-run = 0 mutation.
+
+### Verification
+- Targeted M6 suite (`store/worker/stages/scheduler/recovery/observability/cli/windows_worker`): **356 passed**.
+- Incident acceptance (`test_m4_acceptance` + `test_m4_incident_recovery`): **54 passed**.
+- Full regression `pytest tests -q`: **1642 passed / 10 skipped / 0 failed**.
+- Live C10 unchanged (video 62 KU, album 6 KU); production M5 store unchanged (2 assets / 68 KU, revision `7b604b33…`).
+- PowerShell syntax validation: all 4 `.ps1` scripts parse clean (PowerShell `Parser::ParseFile`, 0 errors). Install dry-run confirmed 0 Task Scheduler mutation.
+- No production operations DB created; **no production scheduled task registered**; no network / GPU / LLM / live Douyin used.
 
 ---
 

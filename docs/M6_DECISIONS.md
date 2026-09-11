@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 .. M6-09 = TODO`
+> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`, `M6-07..M6-09 = TODO`
 > **Status**: APPROVED / ACTIVE
 > **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
@@ -292,3 +292,45 @@
 ## Decision 48: CLI Is a Thin Secret-Scrubbed Presentation Layer (M6-05)
 - **Context**: Operators need status/admin commands without exposing secrets.
 - **Decision**: `src/operations/cli.py` is a thin presentation layer over observability + admin. Every subcommand accepts `--db` (env `OPERATIONS_DB_PATH` fallback) and `--json`. Every emitted job row passes through `_secret_free` (strips `lease_token`, cookies, API keys) before output. Commands: `status`, `asset`, `jobs`, `failed`, `workers`, `timeline`, `retry`, `cancel`, `recover`. No network / GPU / LLM runtime is ever started by the CLI.
+
+---
+
+## Decision 49: Windows Worker Host Wraps WorkerRuntime; Lifecycle Stays Platform-Neutral (M6-06)
+- **Context**: The PC worker needs a long-running host (config → preflight → single-instance → logging → register → run_forever → graceful stop → exit code), but Windows-specific process lifecycle must not leak into `worker.py`.
+- **Decision**: New `src/operations/windows_worker.py` owns all Windows/process concerns (`WorkerHostConfig`, `WorkerPreflightResult`, `SingleInstanceLock`, rotating logging, signal handling, deterministic exit codes, CLI). `WorkerRuntime` remains platform-neutral and is wrapped unchanged. Frozen exit codes: `0` normal stop, `2` config error, `3` preflight failure, `4` already running, `5` fatal runtime error.
+
+---
+
+## Decision 50: Capability Preflight Fails Start Rather Than Silently Dropping (M6-06)
+- **Context**: A worker that claims a capability it cannot actually execute would cause the control plane to dispatch a doomed job.
+- **Decision**: `run_capability_preflight` checks availability/configuration only (path existence for browser/profile/ASR/VLM/LLM runtimes) and never launches any runtime. Missing prerequisites → `start()` returns `EXIT_PREFLIGHT_FAILURE` with explicit diagnostics (never a silent capability removal). `store_ingest` is deliberately absent from `WINDOWS_PC_TARGET_CAPABILITIES` (NAS owns the M5 store) and produces a warning if claimed.
+
+---
+
+## Decision 51: Local LLM Runtime Policy — llama.cpp Preferred, Path Checks Only in M6-06 (M6-06)
+- **Context**: M6-00 frozen `G:\llama.cpp` as the preferred local LLM runtime and `D:\LMmodel` as the model root; LM Studio is not the M6 production default.
+- **Decision**: M6-06 preflight performs existence/configuration checks for `llm_runtime`/`llm_model_root` only — it never starts llama.cpp and never scans the model directory. Loading a model is out of scope until a stage executes.
+
+---
+
+## Decision 52: Single-Instance via OS File Lock; Stale Files Are Not Fatal (M6-06)
+- **Context**: Two worker hosts must never run concurrently, but a crash leaves a stale lock file that must not permanently block restart.
+- **Decision**: `SingleInstanceLock` uses an OS-level byte-range lock (`msvcrt` on Windows, `fcntl` elsewhere) whose identity is the lock path (derived from `worker_id` config, never PID/time). The OS lock is authoritative: a stale file is simply re-locked. A second instance exits `4` (already running). PID written to the lock file is diagnostics-only.
+
+---
+
+## Decision 53: Task Scheduler "At Log On" + Restart-On-Failure, Production Registration Deferred (M6-06)
+- **Context**: The collector needs the interactive Windows user session (Chrome + profile), so boot-before-login is wrong for v1. The NAS control-plane endpoint does not exist yet, so registering a production scheduled task now would run a host with no transport.
+- **Decision**: Task Scheduler trigger = **At Log On** with a configurable startup delay (default 45 s) and `RunLevel Limited` interactive principal; settings allow running on battery and never stop on battery; restart policy = every 1 minute with high count (no infinite crash-loop). `scripts/windows/install_m6_worker_task.ps1` is **dry-run by default** (`-Apply` registers; intended only after M6-08). This milestone ships ready-to-install artifacts only; no production task is registered.
+
+---
+
+## Decision 54: No SQLite-Over-SMB for the Operations DB; Transport Is Placeholder (M6-06)
+- **Context**: Decision 32 forbade workers opening the NAS operations DB over SMB; M6-06 must make that enforceable at the host.
+- **Decision**: `WindowsWorkerHost._smb_guard_errors()` rejects a UNC (`\\...`) or URL (`://`) `operations_db_path`; mapped SMB drive letters are forbidden by documented policy (undetectable programmatically). The host requires an explicit local `operations_db_path` and fails closed (exit `2`) rather than auto-creating the production `data/operations/operations.sqlite3`. `control_plane_transport` is `local_sqlite_test` (the only runnable M6-06 transport); `http` is a placeholder that fails closed until M6-07/08.
+
+---
+
+## Decision 55: Worker Host Does Not Own Startup Recovery (M6-06)
+- **Context**: M6-05 `startup_recovery` belongs to the NAS control plane, not an execution worker — especially in the future remote topology.
+- **Decision**: The Windows worker host only registers, heartbeats, claims, and executes. Recovery/scheduler remain control-plane duties. Windows sleep/shutdown are normal states: lease expiry → NAS recovery; on resume the host re-registers and re-heartbeats. No distributed resume protocol in M6-06.

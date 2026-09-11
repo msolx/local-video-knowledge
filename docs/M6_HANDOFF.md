@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`; `M6-06 = NEXT`; `M6-07..M6-09 = TODO`
+> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`; `M6-07 = NEXT`; `M6-08..M6-09 = TODO`
 > **Branch**: `feat/m6-automated-knowledge-operations`
 > **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
 
@@ -8,13 +8,14 @@
 
 ## 1. Current State
 
-- M6-00 (design) and M6-01 (durable operations store + job state machine) are complete on `feat/m6-automated-knowledge-operations`, branched from `main` at `e6476be57564d950b7eb75016eed54b1cbf32fec` (M5 final SHA).
-- M6-01 delivered `src/operations/` (`models.py`, `store.py`, `__init__.py`) + `tests/test_operations_store.py` (76 tests, all passing). No production operations DB created; no M2–M5 code modified; no runtime started.
+- M6-00 (design), M6-01 (durable operations store + job state machine), M6-02 (worker + lease protocol), M6-03 (stage adapters), M6-04 (scheduler), M6-05 (recovery/observability), and M6-06 (Windows worker host + autostart) are complete on `feat/m6-automated-knowledge-operations`, branched from `main` at `e6476be57564d950b7eb75016eed54b1cbf32fec` (M5 final SHA).
+- M6-06 delivered `src/operations/windows_worker.py` + `tests/test_operations_windows_worker.py` (54 tests), PowerShell autostart artifacts under `scripts/windows/`, `config/examples/m6_windows_worker.example.json`, and `docs/M6_WINDOWS_WORKER_RUNBOOK.md`. No production operations DB created; no production scheduled task registered; no M2–M5 code modified; no runtime started.
 - Docs:
   - `docs/M6_OPERATIONS_ARCHITECTURE.md`
-  - `docs/M6_DECISIONS.md` (now 21 decisions; Decision 21 = additive `CANCELLED` job state)
-  - `docs/M6_TASKS.md` (M6-01 DONE)
+  - `docs/M6_DECISIONS.md` (now 55 decisions; M6-06 added Decisions 49–55)
+  - `docs/M6_TASKS.md` (M6-06 DONE)
   - `docs/M6_HANDOFF.md`
+  - `docs/M6_WINDOWS_WORKER_RUNBOOK.md` (new)
 
 ---
 
@@ -123,16 +124,35 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ---
 
+## 5f. M6-06 Deliverables Completed
+
+- `src/operations/windows_worker.py` — Windows PC Worker Host wrapping the frozen `WorkerRuntime`. `m6-windows-worker-config-v1` config contract; `m6-windows-worker-preflight-v1` preflight result; frozen exit codes (0 normal / 2 config / 3 preflight / 4 already-running / 5 fatal); `WINDOWS_PC_TARGET_CAPABILITIES` (collector, downloader, cpu_media, gpu_asr, gpu_vlm, llm_extraction — no store_ingest); transport placeholder `local_sqlite_test` (runnable) vs `http` (fails closed until M6-07/08).
+  - `WorkerHostConfig` — worker_id, capabilities, roots, `operations_db_path` (local-dev only), knowledge_store_path, intervals, rotating log settings, `single_instance_lock_path`, transport, `startup_delay_seconds`, `runtime_references` (browser exe/profile, node, ASR/VLM/LLM runtimes + model roots). Secrets never in config.
+  - `run_capability_preflight` — availability/config checks only (never launches browser/Douyin/Whisper/llama.cpp); missing required prerequisite → start fails (exit 3), no silent capability drop; `llm_runtime`/`llm_model_root` existence checks only (llama.cpp policy).
+  - `SingleInstanceLock` — OS file lock (`msvcrt`/`fcntl`), stale file re-locked (never fatal), second instance exit 4.
+  - `configure_worker_logging` — `RotatingFileHandler` (10 MB × 5, default `logs/operations/windows-worker.log`); `redact_config`/`redact_worker_registration`/`redact_message` strip secret-shaped keys.
+  - `WindowsWorkerHost.start()` — SMB/UNC + transport guards → fail-closed missing `operations_db_path` → preflight → lock → build `WorkerRuntime` → register (redacted) → heartbeat → SIGINT/SIGTERM graceful stop → `run_forever` → exit code; host never calls `startup_recovery`.
+  - CLI: `python -m src.operations.windows_worker {run|preflight|print-config} --config <path> [--json]`.
+- `src/operations/__init__.py` — lazy PEP 562 `__getattr__` exports (keeps `python -m` stderr clean).
+- `config/examples/m6_windows_worker.example.json` (tracked, no secrets) + gitignored `config/local/`.
+- `scripts/windows/{run_m6_worker,install_m6_worker_task,uninstall_m6_worker_task,status_m6_worker_task}.ps1` — run wrapper (exact venv Python + exit-code propagation), dry-run-by-default Task Scheduler installer (`-Apply` deferred to M6-08), idempotent uninstall, read-only status.
+- `docs/M6_WINDOWS_WORKER_RUNBOOK.md` — full runbook.
+- `tests/test_operations_windows_worker.py` — 54 tests (config/preflight/lock/logging/host lifecycle/exit codes/PowerShell artifacts/real install dry-run 0-mutation).
+- Verification: targeted M6 suite = **356 passed**; incident acceptance = **54 passed**; full regression = **1642 passed / 10 skipped / 0 failed**. PowerShell syntax validated (0 errors). Live C10 unchanged (video 62 / album 6); production M5 store unchanged (2 assets / 68 KU, revision `7b604b33…`). No production ops DB created; **no production scheduled task registered**; no network/GPU/LLM/live Douyin; M2–M5 production code unmodified.
+
+---
+
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-06 — Windows PC Worker Autostart**
+**M6-07 — NAS Docker Control Plane & Remote Worker Transport**
 
-- Objective: boot/login autostart for the PC worker (capability-based GPU/media/collector worker). Deployment contract only (architecture doc §24); service registration happens here, not in M6-00.
-- Reuse (all frozen): `src/operations/worker.py` (`WorkerRuntime.run_forever`), `src/operations/scheduler.py`, `src/operations/admin.py` (`startup_recovery`), `src/operations/store.py`.
-- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-05 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it.
-- Commit message: per M6-06 spec.
+- Objective: Docker Compose / service autostart for the NAS control plane + storage mounts + Knowledge Store ownership, and the thin remote worker transport (control-plane API) that the Windows worker host will target.
+- The Windows worker host from M6-06 is ready-to-install but currently runs only `local_sqlite_test` transport; production registration (`install_m6_worker_task.ps1 -Apply`) is deferred until the M6-07/08 control-plane endpoint exists.
+- Reuse (all frozen): `src/operations/scheduler.py`, `src/operations/admin.py` (`startup_recovery` — control-plane owned), `src/operations/observability.py`, `src/operations/store.py`, `src/operations/windows_worker.py` (`WindowsWorkerHost`, `WorkerHostConfig` with `control_plane_transport=http` placeholder).
+- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-06 sealed semantics without an explicit contract-gap STOP; no runtime/model start; SQLite only; no production DB unless the spec explicitly requires it; Windows worker must never open the NAS operations DB over SMB/UNC.
+- Commit message: per M6-07 spec.
 
-Do not start M6-06 until it is explicitly requested; M6-05 is sealed above.
+Do not start M6-07 until it is explicitly requested; M6-06 is sealed above.
 
 ---
 
