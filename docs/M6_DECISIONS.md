@@ -1,8 +1,8 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Architectural Decision Log
 
-> **Milestone Status**: `M6-00 = DONE`, `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`, `M6-07 = DONE`, `M6-08..M6-09 = TODO`
-> **Status**: APPROVED / ACTIVE
-> **Context**: M2/M3/M4/M5 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
+> **Milestone Status**: `M6-00..M6-09 = DONE / COMPLETE / SEALED`
+> **Status**: APPROVED / SEALED
+> **Context**: M2/M3/M4/M5/M6 are COMPLETE/SEALED. M6 automates the full path "Douyin favorite → SEARCHABLE Knowledge Store" with a NAS control plane + capability-based workers.
 
 ---
 
@@ -368,10 +368,26 @@
 - **Context**: HTTP must not advertise readiness before recovery/initialization.
 - **Decision**: Frozen startup order: load config → configure logging → open/create local Ops DB → validate_operations_store → verify M5 store path → startup_recovery → create scheduler → create NAS local worker → start scheduler loop → start local worker loop → expose HTTP ready. /health/ready reports ready only after all init steps succeed; errors are surfaced as structured {error:{code,message}} (AUTH_FAILED / VALIDATION_ERROR / NO_JOB / STALE_LEASE / CONFLICT / NOT_FOUND / SERVER_UNAVAILABLE / INVARIANT_ERROR) — never tracebacks, SQL, or tokens.
 
+---
+
 ## Decision 64: Artifact Paths Are Machine-Local, Identity Is Content-Based (M6-07)
 - **Context**: Windows (Z:\PKP\processed) and NAS (/srv/pkp/processed) see the same physical storage under different roots.
-- **Decision**: M6-03 frozen fingerprint contract already excludes esolved_path from ArtifactDescriptor.fingerprint_dict; stage output identity is path-independent. Fixed stage placement (Decision 56) prevents the same stage running on different OSes with different path-based fingerprints. Stage execution resolves files from the local processed_root/rchive_root config; the NAS never opens Windows-style absolute paths, and Windows never opens NAS paths. Cross-machine path translation is NOT implemented in M6 v1 (STOP-guarded); it is a documented portability risk if a stage ever runs on both hosts.
+- **Decision**: M6-03 frozen fingerprint contract already excludes esolved_path from ArtifactDescriptor.fingerprint_dict; stage output identity is path-independent. Fixed stage placement (Decision 56) prevents the same stage running on different OSes with different path-based fingerprints. Stage execution resolves files from the local processed_root/ rchive_root config; the NAS never opens Windows-style absolute paths, and Windows never opens NAS paths. Cross-machine path translation is NOT implemented in M6 v1 (STOP-guarded); it is a documented portability risk if a stage ever runs on both hosts.
+
+---
 
 ## Decision 65: Docker Packaging Is Thin, Non-Root, Disposable-Smoke Only (M6-07)
 - **Context**: Container must hold control plane + scheduler + NAS local worker, not GPU/Chrome/LM Studio/llama.cpp.
-- **Decision**: docker/control-plane/Dockerfile (python:3.12-slim, non-root pkp user, stdlib urllib healthcheck on /health/live), docker-compose.example.yml with separate volumes /var/lib/pkp/operations (Ops DB), /var/lib/pkp/knowledge (M5 store), /mnt/pkp/archive, /mnt/pkp/processed, logs; PKP_CONTROL_PLANE_TOKEN=CHANGE_ME placeholder; estart: unless-stopped (fatal crash → Docker restart policy, the process does not self-restart infinitely). Build + disposable localhost smoke performed; no production NAS deployment (M6-08).
+- **Decision**: docker/control-plane/Dockerfile (python:3.12-slim, non-root pkp user, stdlib urllib healthcheck on /health/live), docker-compose.example.yml with separate volumes /var/lib/pkp/operations (Ops DB), /var/lib/pkp/knowledge (M5 store), /mnt/pkp/archive, /mnt/pkp/processed, logs; PKP_CONTROL_PLANE_TOKEN=CHANGE_ME placeholder; restart: unless-stopped (fatal crash → Docker restart policy, the process does not self-restart infinitely). Build + disposable localhost smoke performed; no production NAS deployment (M6-08).
+
+---
+
+## Decision 66: Real Canary E2E & Production Hardening (M6-08)
+- **Context**: Full live deployment revealed real-world edge cases: Douyin crawler protection, cross-node artifact visibility, Task Scheduler XML limits, and virtual environment contamination.
+- **Decision**: (1) `_ProfileCookieProvider` decrypts Chrome cookies in-memory for live Douyin downloads without persisting credentials; (2) `MediaProcessAdapter` automatically syncs local evidence artifacts to the shared SMB volume before completing the stage; (3) Windows Task Scheduler `RestartCount` is clamped to 999; (4) `.venv-f2` site-packages are injected dynamically in Windows worker to preserve main virtualenv isolation. Live Canary (`douyin_7660044343020916006`) successfully processed to SEARCHABLE with 94 KUs; historical 68 KUs strictly preserved (68/68 parity).
+
+---
+
+## Decision 67: Final Acceptance & Local Seal (M6-09)
+- **Context**: M6 milestone is complete and ready to be sealed.
+- **Decision**: Seal Milestone M6 under annotated git tag `m6-automated-knowledge-operations-complete`. Retain M4 incident classification as `RECOVERED_WITH_INTERMEDIATE_PROVENANCE_LOSS`. Document known operational limitations (Douyin interactive CAPTCHA risk control requiring operator session refresh; worker drain PAUSE state deferred). Propose Milestone M7 (Knowledge Verification) as next milestone. No remote push or destructive experiments.

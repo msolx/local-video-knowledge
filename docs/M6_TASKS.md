@@ -1,6 +1,6 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Task Board
 
-> **Status**: M6-00 DONE; M6-01 DONE; M6-02 DONE; M6-03 DONE; M6-04 DONE; M6-05 DONE; M6-06 DONE; M6-07 DONE; M6-08..M6-09 TODO.
+> **Status**: M6-00..M6-09 DONE; Milestone M6: COMPLETE / SEALED.
 
 ---
 
@@ -16,8 +16,8 @@
 | M6-05 | DONE | Crash Recovery / Retry / Observability |
 | M6-06 | DONE | Windows PC Worker Host & Autostart |
 | M6-07 | DONE | NAS Docker Control Plane + Remote Worker Transport |
-| M6-08 | TODO | Real Douyin Favorite → Searchable Knowledge E2E |
-| M6-09 | TODO | Final Acceptance |
+| M6-08 | DONE | Real Douyin Favorite → Searchable Knowledge E2E (`docs/M6_PRODUCTION_DEPLOYMENT_RECORD.md`) |
+| M6-09 | DONE | Final Acceptance & Milestone Seal (`docs/M6_FINAL_ACCEPTANCE.md`) |
 
 ---
 
@@ -223,22 +223,31 @@ Wrap the frozen `WorkerRuntime` into a reliable Windows long-running worker host
 
 ---
 
-## M6-08: Real Douyin Favorite → Searchable Knowledge E2E (`TODO`)
+## M6-08: Real Douyin Favorite → Searchable Knowledge E2E (`DONE`)
 
 ### Objective
 End-to-end: real Douyin favorite → collection detection → archive → media → evidence → extraction → finalize → store ingest → SEARCHABLE.
 
-### Scope hints
-- Uses real C10 corpus assets for validation of stages already covered by M4/M5.
-- PC must be the authentic collector/downloader location in v1 (Topology A).
-- M6-08 performs the real NAS deployment (production volumes + real token) and enables the Windows scheduled task.
+### Delivered
+- Real live Canary asset `douyin_7660044343020916006` traversed all 6 pipeline stages to `SEARCHABLE` (Pipeline `SUCCEEDED`).
+- 94 canonical KUs ingested into NAS M5 Knowledge Store.
+- M5 historical parity strictly preserved (68/68 KUs intact, 0 lost).
+- Production bug fixes: `_ProfileCookieProvider`, `_sync_processed_artifacts`, `RestartCount = 999`, `.venv-f2` isolation.
+- Full verification documented in `docs/M6_PRODUCTION_DEPLOYMENT_RECORD.md`.
 
 ---
 
-## M6-09: Final Acceptance (`TODO`)
+## M6-09: Final Acceptance & Milestone Seal (`DONE`)
 
 ### Objective
-Acceptance run covering the recovery scenarios + E2E; produce final acceptance doc.
+Acceptance run covering the recovery scenarios + E2E; produce final acceptance doc; seal Milestone M6.
+
+### Delivered
+- Comprehensive production read-only audit (NAS Control Plane, Windows Scheduled Worker, heartbeats, retrieval proof).
+- Post-deployment SQLite cold backups verified (`operations_m6_08.sqlite3`, `knowledge_store_m6_08.sqlite3`).
+- Full regression suite passing with 0 failures (1726 passed).
+- Final acceptance documentation: `docs/M6_FINAL_ACCEPTANCE.md`.
+- Milestone M6 sealed with annotated tag `m6-automated-knowledge-operations-complete`.
 
 ---
 

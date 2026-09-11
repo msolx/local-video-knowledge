@@ -1,8 +1,8 @@
 # Milestone M6: Automated Knowledge Operations & NAS/PC Orchestration · Handoff
 
-> **Milestone Status**: `M6-01 = DONE`, `M6-02 = DONE`, `M6-03 = DONE`, `M6-04 = DONE`, `M6-05 = DONE`, `M6-06 = DONE`, `M6-07 = DONE`; `M6-08 = NEXT`; `M6-09 = TODO`
+> **Milestone Status**: `M6-00..M6-09 = DONE / COMPLETE / SEALED`. Next Milestone: `M7 · Knowledge Verification`.
 > **Branch**: `feat/m6-automated-knowledge-operations`
-> **M2/M3/M4/M5**: COMPLETE / SEALED (do not modify).
+> **M2/M3/M4/M5/M6**: COMPLETE / SEALED (do not modify).
 
 ---
 
@@ -146,14 +146,12 @@ Legacy pre-M4 LLM path (`build_knowledge`, LM Studio `qwen3.6-27b-knowledge`) is
 
 ## 6. NEXT_AGENT_START_HERE
 
-**M6-08 — Production Deployment & Real Douyin Favorite → Searchable E2E**
+**Milestone M7 — Knowledge Verification**
 
-- Objective: deploy the NAS control plane to the real NAS (production volumes + real `PKP_CONTROL_PLANE_TOKEN` secret), register the Windows scheduled task (`scripts/windows/install_m6_worker_task.ps1 -Apply` — currently READY-TO-INSTALL, never registered), and run the real Douyin favorite → SEARCHABLE E2E with live C10 assets.
-- Reuse (all frozen): `src/operations/control_plane.py` (`ControlPlaneService`), `src/operations/http_transport.py`, `src/operations/transport.py`, `src/operations/scheduler.py`, `src/operations/admin.py`, `src/operations/observability.py`, `src/operations/store.py`, `src/operations/windows_worker.py` (http mode via `config/examples/m6_windows_worker_http.example.json`), Docker `docker/control-plane/`.
-- Constraints: never modify M2–M5 sealed modules; never modify M6-01..M6-07 sealed semantics without an explicit contract-gap STOP; no SQLite-over-SMB (Ops DB + M5 store NAS-local only); remote Windows worker never opens the NAS Ops/M5 DB directly — HTTP control plane only; real token only via env/secret (never committed); no live external network beyond the real deployment target.
-- Commit message: per M6-08 spec.
-
-Do not start M6-08 until it is explicitly requested; M6-07 is sealed above.
+- Objective: External truth verification, claim grounding against trusted knowledge sources, confidence calibration, hallucination detection, and automated verification question resolution.
+- Baseline: Milestone M6 sealed under tag `m6-automated-knowledge-operations-complete` on branch `feat/m6-automated-knowledge-operations`.
+- Production Architecture: Topology A (NAS Control Plane + Windows GPU Worker) fully operational in production.
+- Do not start M7 until it is explicitly requested; M6 is sealed above.
 
 ---
 
